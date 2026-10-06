@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "govee-rt"
+version = "0.1.0"
+description = "Real-time per-segment control of Govee Wi-Fi strips over the LAN, with audio-reactive modes"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+audio = ["sounddevice>=0.4.6"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+govee-rt = "govee_rt:main"
+
+[tool.setuptools]
+py-modules = ["govee_rt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
