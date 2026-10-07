@@ -3,6 +3,7 @@
     tools/ble_run.sh .venv/bin/python tools/music_probe.py rates       # no eyes needed
     tools/ble_run.sh .venv/bin/python tools/music_probe.py inject      # phone-mic stream guesses
     tools/ble_run.sh .venv/bin/python tools/music_probe.py pulse       # beat pulses via brightness
+    tools/ble_run.sh .venv/bin/python tools/music_probe.py rollbar     # one bar rolled by the strip
 
 Address comes from ~/.govee-rt/devices.json (run `connect` first). See docs/PROTOCOL.md,
 "Music modes over BLE", for what each phase is testing.
@@ -15,14 +16,15 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import govee_rt  # noqa: E402
-from govee_rt.ble import ble_packet  # noqa: E402
+from govee_rt.ble import ble_packet, sketch_select  # noqa: E402
 from govee_rt.device import Devices  # noqa: E402
 
 def connect():
     prof = Devices().default()
     if not prof or prof.get("transport") != "ble":
         sys.exit("no saved BLE device; run: python -m govee_rt connect --ble")
-    g = govee_rt.GoveeBle(prof["address"], segments=prof["segments"])
+    g = govee_rt.GoveeBle(prof["address"], segments=prof["segments"], cells=prof.get("cells"),
+                          reverse=bool(prof.get("reverse")))
     print("connected", g.name, flush=True)
     return g
 
@@ -102,8 +104,47 @@ def pulse(g):
     g._run(g._write_acked(ble_packet(0x33, 0x04, 100), 0.5))
 
 
+def rollbar(g, bar=6, color=(255, 0, 170)):
+    """A traveling bar per hit, done by the strip: a picture that is one bar at cell 1 (the
+    owner's right end) and black elsewhere, rolled by sketch effect 0x09. Questions for the
+    owner: which way and how fast does it roll at each speed, and does re-sending only the
+    mode select (one write, as a kick would) put the bar back at the right end?"""
+    cells = g.cells or 60
+    pic = [color if i < bar else (0, 0, 0) for i in range(cells)]
+    for speed in (100, 60):
+        say(f"ROLLBAR speed {speed}: {bar}-cell bar at the right end, strip rolls it, 6 s")
+        g.show_sketch(pic, 0x09, speed)
+        time.sleep(6)
+    say("RESTART: speed 100, re-sending only the mode select every 1.5 s, 6 times")
+    g.show_sketch(pic, 0x09, 100)
+    for k in range(6):
+        time.sleep(1.5)
+        t = time.monotonic()
+        ack = g._run(g._write_acked(sketch_select(g.sketch_code)))
+        say(f"   restart {k + 1}: select ACKed {'yes' if ack is not None else 'no'} in {1000 * (time.monotonic() - t):.0f} ms")
+    time.sleep(1.5)
+    g._run(g._write_acked(ble_packet(0x33, 0x04, 100), 0.5))   # leave brightness at 100
+
+
+def rollrestart(g, bar=6, color=(255, 0, 170), speed=60, every=3.0, count=5):
+    """Only the restart question, slow enough to see: roll 6 s untouched, then re-send the mode
+    select every `every` s. Ask: does the bar snap back to the right end at each one?"""
+    cells = g.cells or 60
+    pic = [color if i < bar else (0, 0, 0) for i in range(cells)]
+    say(f"ROLL speed {speed}, no restarts, 6 s")
+    g.show_sketch(pic, 0x09, speed)
+    time.sleep(6)
+    for k in range(count):
+        t = time.monotonic()
+        ack = g._run(g._write_acked(sketch_select(g.sketch_code)))
+        say(f"   RESTART {k + 1}: ACK {'yes' if ack is not None else 'no'} in {1000 * (time.monotonic() - t):.0f} ms")
+        time.sleep(every)
+    g._run(g._write_acked(ble_packet(0x33, 0x04, 100), 0.5))
+
+
 if __name__ == "__main__":
-    phases = {"rates": rates, "inject": inject, "inject_select": inject_select, "pulse": pulse}
+    phases = {"rates": rates, "inject": inject, "inject_select": inject_select, "pulse": pulse,
+              "rollbar": rollbar, "rollrestart": rollrestart}
     todo = sys.argv[1:] or list(phases)
     g = connect()
     try:

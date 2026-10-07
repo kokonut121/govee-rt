@@ -321,7 +321,32 @@ class BassPulse(Effect):
     Three tiers (owner, 2026-10-07): with `strong` > 0 a hit is full only when `bass_slow` is
     at least `strong` (a hit as loud as the recent loudest kicks); softer hits light at `soft`.
     The tier is picked on the hit frame and can only step up during the hold, never down.
-    With `floor` 0 that gives off between kicks, mid on soft kicks, full on strong ones."""
+    With `floor` 0 that gives off between kicks, mid on soft kicks, full on strong ones.
+
+    Desire tuning (owner, 2026-10-08), all off by default:
+    - `hit_min`: a level hit needs `bass_slow` at least this, and a detected beat counts only
+      if its rise sat mostly in the bass (`beat_share` >= KICK_SHARE). Claps and
+      plucks over a sparse kick fire the beat detector at `bass_slow` ~0.3..0.5 and share
+      under 0.1; with floor 0 each one was an on/off flicker. The share test lets a kick
+      through on its first block, before `bass_slow` has risen, so nothing gets later.
+    - `sustain`: a single held-out hit stays lit while `bass_slow` stays at least this fraction
+      of its peak since the hit (and at least `hit_min`), so a held 808 keeps the light as long
+      as it rings. Only while no other onset has come since the hit and not inside a run. On
+      the owner's Desire recording the sub under the kicks sits at ~0.6 of the kick peak, so
+      0.5 held the light solid for 20 s; 0.75 releases it and still holds a real held note.
+    - `trill`: in the dark state (no bass: intros, breakdowns), when the analyzer's `trill`
+      reaches this (a held note whose pitch alternates or whose loudness pulses fast, like the
+      "desireeee" in the intro of Desire), the light follows it: full on the upper / louder
+      half, `soft` on the other, never off. Only in the dark, so a gated synth or arpeggio
+      between kicks can't turn the room into a strobe. `trill_strobe` > 0 instead strobes
+      full / off at that many flashes per second for as long as the trill lasts, in the
+      current color (owner, 2026-10-08: "flicker faster like a strobe", no color change).
+      15/s is the ceiling: the stream renders 30 frames/s, so that is on/off every frame.
+    - `run_gap`: kicks closer than this to the previous one form a run (rolls, 8ths, 16ths).
+      Inside a run every kick toggles the light between full and `soft`, and it stays lit
+      until the run ends, so each kick of a fast run shows instead of merging into one long
+      flash. Any kick that lands while the light is still lit toggles it too. A kick with space around it still goes off -> full -> off. Runs use the analyzer's
+      `onset` (90 ms refractory) since `beat` ignores anything within 250 ms."""
     name, label = "bass_pulse", "Bass pulse"
     reactive = True
     params = [PAL(default="sunset"),
@@ -335,6 +360,11 @@ class BassPulse(Effect):
               F("color_every", 1, 0, 16, 1, label="next palette color every N hits (0 = never)"),
               F("dark_below", 0.25, 0.0, 0.9, label="go dark when slow bass is under (0 = never)"),
               F("dark_after", 0.3, 0.0, 3.0, label="after this long under it (s)"),
+              F("hit_min", 0.0, 0.0, 1.0, label="ignore hits with slow bass under (0 = off)"),
+              F("sustain", 0.0, 0.0, 1.0, label="hold while bass stays over this part of its peak (0 = off)"),
+              F("trill", 0.0, 0.0, 1.0, label="follow vocal trills at this strength (0 = off)"),
+              F("trill_strobe", 0.0, 0.0, 15.0, 0.5, label="strobe on trills (flashes/s, 0 = follow the note)"),
+              F("run_gap", 0.0, 0.0, 0.5, label="kicks closer than this toggle full/soft (s, 0 = off)"),
               F("drift", 0.0, 0.0, 0.3, label="color drift (cycles/s)"),
               F("spread", 0.0, 0.0, 1.0, label="palette across strip")]
 
@@ -344,6 +374,8 @@ class BassPulse(Effect):
     HYSTERESIS = 0.2
     MIN_GAP = 0.06                     # seconds off before the next flash can start
     DARK_EXIT = 0.1                    # bass_slow above dark_below + this leaves dark
+    KICK_SHARE = 0.12                  # beat_share at or above this counts as a kick (hit_min)
+    RUN_MIN = 0.07                     # s between kicks of a run (onset refractory is 0.09)
 
     def reset(self):
         self.level = self.phase = self.t = 0.0
@@ -353,13 +385,25 @@ class BassPulse(Effect):
         self.below_since = None
         self.hits = self.color_idx = 0
         self.top = 1.0
+        self.ring_ref = None
+        self.onset_after_hit = False
+        self.last_hit = -1e9
+        self.in_run = False
+        self.strobe_t0 = None
 
     def _tier(self, p, slow):
         return 1.0 if p["strong"] <= 0 or slow >= p["strong"] else p["soft"]
 
     def _hit(self, p, slow):
-        self.on, self.on_since = True, self.t
-        self.top = self._tier(p, slow)
+        quick = p["run_gap"] > 0 and self.t - self.last_hit < p["run_gap"]
+        if quick or (p["run_gap"] > 0 and self.on):
+            self.top = p["soft"] if self.top >= 1.0 else 1.0   # a kick while lit flips the level
+            self.in_run = quick
+        else:
+            self.in_run = False
+            self.top = self._tier(p, slow)
+        self.on, self.on_since, self.last_hit = True, self.t, self.t
+        self.ring_ref, self.onset_after_hit = None, False
         self.hits += 1
         every = int(round(p["color_every"]))
         if every > 0 and self.hits % every == 0:
@@ -375,8 +419,10 @@ class BassPulse(Effect):
         pos = (bass - self.lo) / max(self.MIN_SPAN, self.hi - self.lo)   # 0 at recent low, 1 at recent high
         thr = p["threshold"]
         slow, below = c.f.get("bass_slow", 1.0), p["dark_below"]
+        need = p["hit_min"]
+        kick = c.beat and (need <= 0 or c.f.get("beat_share", 1.0) >= self.KICK_SHARE)
         if self.dark:
-            if (c.beat and slow >= below) or slow >= below + self.DARK_EXIT:
+            if (kick and slow >= below) or slow >= max(below + self.DARK_EXIT, need):
                 self.dark, self.below_since = False, None
                 self.lo = self.hi = bass       # re-arm the level trigger for the next kick
                 self._hit(p, slow)             # the first kick of the drop comes back at full
@@ -388,13 +434,26 @@ class BassPulse(Effect):
                     self.dark, self.on, self.level = True, False, 0.0
             else:
                 self.below_since = None
-            trigger = pos >= thr or (c.beat and p["kick_boost"])
+            trigger = (pos >= thr and slow >= need) or (kick and p["kick_boost"])
+            if self.on and c.f.get("onset") and self.t > self.last_hit:
+                self.onset_after_hit = True
+            if self.on:
+                self.ring_ref = max(self.ring_ref or 0.0, slow)
+            ringing = (p["sustain"] > 0 and not self.onset_after_hit
+                       and not self.in_run and slow >= max(p["sustain"] * (self.ring_ref or 0.0), need))
+            if self.in_run and self.t - self.last_hit >= p["run_gap"]:
+                self.in_run = False                  # the run is over: release as usual
+            ringing = ringing or self.in_run
+            rekick = (p["run_gap"] > 0 and self.on and c.f.get("onset")
+                      and (need <= 0 or c.f.get("beat_share", 1.0) >= self.KICK_SHARE)
+                      and self.t - self.last_hit >= self.RUN_MIN)
             if not self.dark:
-                if not self.on and trigger and self.t - self.off_since >= self.MIN_GAP:
+                if (not self.on and trigger and self.t - self.off_since >= self.MIN_GAP) or rekick:
                     self._hit(p, slow)
-                elif self.on and self._tier(p, slow) > self.top:
+                elif self.on and not self.in_run and self._tier(p, slow) > self.top:
                     self.top = self._tier(p, slow)   # a kick still rising: step up, never down
-                elif self.on and self.t - self.on_since >= p["hold"] and pos < thr - self.HYSTERESIS:
+                elif (self.on and self.t - self.on_since >= p["hold"] and pos < thr - self.HYSTERESIS
+                      and not ringing):
                     self.on, self.off_since = False, self.t
         if self.on or p["release"] <= 0:
             self.level = 1.0 if self.on else 0.0
@@ -402,6 +461,16 @@ class BassPulse(Effect):
             self.level = follow(self.level, 0.0, c.dt, 0.0, p["release"])
         self.phase += p["drift"] * c.dt
         v = 0.0 if self.dark else p["floor"] + (self.top - p["floor"]) * self.level
+        if p["trill"] > 0 and self.dark and c.f.get("trill", 0.0) >= p["trill"]:
+            if p["trill_strobe"] > 0:
+                if self.strobe_t0 is None:
+                    self.strobe_t0 = self.t                      # first flash lands at once
+                # +0.25: flips fall between frames, so frame jitter can't make uneven flashes
+                v = 0.0 if int((self.t - self.strobe_t0) * 2 * p["trill_strobe"] + 0.25) % 2 else 1.0
+            else:
+                v = 1.0 if c.f.get("trill_up") else p["soft"]   # the note's own flicker, mid <-> full
+        else:
+            self.strobe_t0 = None
         stops = len(palette_stops(p["palette"]))
         x0 = self.phase + (self.color_idx / stops if int(round(p["color_every"])) > 0 else 0.0)
         return sample(p["palette"], x0 + p["spread"] * self.i / max(1, self.n)) * v
@@ -661,6 +730,9 @@ def _clean_value(spec, v):
     raise ValueError(kind)
 
 
+SCENE_BLE_MODES = ("roll", "roll_hits", "roll_flash")
+
+
 def scene_idles(scene):
     """Whether the engine may swap this scene for the idle rainbow after silence. Only scenes made
     entirely of music-driven effects (party modes that sit dark or frozen without music); a
@@ -679,6 +751,8 @@ def normalize_scene(scene):
     out = {"name": str(scene.get("name", "untitled"))[:80], "layers": []}
     if isinstance(scene.get("idle"), bool):
         out["idle"] = scene["idle"]
+    if scene.get("ble_mode") in SCENE_BLE_MODES:
+        out["ble_mode"] = scene["ble_mode"]      # a look that needs its own BLE transport mode
     for raw in scene.get("layers", [])[:16]:
         eff = raw.get("effect")
         if eff not in EFFECTS:

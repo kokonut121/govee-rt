@@ -412,9 +412,11 @@ def main():
         sp.add_argument("--ip", help="strip IP (Wi-Fi LAN control)")
         sp.add_argument("--ble", nargs="?", const="auto", metavar="NAME|ADDRESS",
                         help="use Bluetooth instead; optional name substring or address")
-        sp.add_argument("--ble-mode", choices=["stream", "hybrid", "sketch", "segments", "razer"],
+        sp.add_argument("--ble-mode", choices=["stream", "hybrid", "sketch", "segments", "razer", "roll", "roll_hits", "roll_flash"],
                         help="BLE output: stream (whole strip, ~30/s), hybrid (60-cell picture ~3/s + "
-                             "brightness beats ~10/s), sketch (60-cell pictures ~3/s), segments, razer")
+                             "brightness beats ~10/s), sketch (60-cell pictures ~3/s), segments, razer, "
+                             "roll (one bar rolled by the strip), roll_hits (a new rolling bar per hit), "
+                             "roll_flash (palette bars rolled by the strip, brightness on hits)")
 
     def common(sp):
         target(sp)

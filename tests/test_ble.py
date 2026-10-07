@@ -292,3 +292,134 @@ def test_hybrid_mode_beats_on_brightness_picture_on_sketch():
         assert fake.brightness == 100 and fake.bad == 0
     finally:
         g.close()
+
+
+def _bars(pic, bar):
+    lit = [i for i, c in enumerate(pic) if max(c) > 0]
+    return [i for i in lit if i - 1 not in lit] if lit else []      # where each bar starts
+
+
+def test_roll_mode_adds_a_bar_per_hit_and_old_bars_keep_going():
+    ble = govee_rt.ble
+    fake = FakeBleClient(segments=20)
+    g = govee_rt.GoveeBle(segments=20, mode="roll_hits", cells=60, reverse=True, client_factory=lambda: fake)
+    pictures = []
+    try:
+        def frame(level, wait=0.0):
+            g.rt_frame([(int(255 * level), 0, int(170 * level))] * 20)
+            g.flush(timeout=2)
+            if fake.sketch is not None and (not pictures or fake.sketch != pictures[-1][1]):
+                pictures.append((time.monotonic(), list(fake.sketch)))
+            time.sleep(wait)
+        frame(0, 0.05)
+        assert _bars(fake.sketch, ble.ROLL_BAR) == [] and fake.sketch_effect == ble.ROLL_EFFECT
+        t1 = time.monotonic()
+        frame(1.0, 0.45)                                   # kick 1
+        frame(0, 0.05)
+        t2 = time.monotonic()
+        frame(1.0)                                         # kick 2, 0.5 s later
+        bars = _bars(fake.sketch, ble.ROLL_BAR)
+        v, d = ble.ROLL_CELLS_PER_S, g._roll_delay
+        assert len(bars) == 2                              # a hit adds a bar, the old one stays
+        assert abs(bars[0] - v * d) <= 3                   # new bar: where it is on the strip by now
+        assert abs(bars[1] - v * (t2 - t1 + d)) <= 3       # old bar: where the roll has carried it
+        deadline = time.monotonic() + 3.5
+        while time.monotonic() < deadline and _bars(fake.sketch, ble.ROLL_BAR):
+            frame(0, 0.02)
+        assert _bars(fake.sketch, ble.ROLL_BAR) == []      # both finished their pass and left
+        for _, pic in pictures:                            # never drawn where the roll would wrap
+            assert all(p + ble.ROLL_BAR <= 60 for p in _bars(pic, ble.ROLL_BAR))
+        assert fake.stats["segment_color"] == 0 and fake.bad == 0
+    finally:
+        g.close()
+
+
+def test_roll_mode_is_one_bar_uploaded_once():
+    fake = FakeBleClient(segments=20)
+    g = govee_rt.GoveeBle(segments=20, mode="roll", cells=60, client_factory=lambda: fake)
+    try:
+        for level in (0, 1.0, 0, 1.0, 0.45, 1.0, 0):        # kicks and a run change nothing
+            g.rt_frame([(int(255 * level), 0, 0)] * 20)
+            g.flush(timeout=2)
+        assert fake.stats["sketch_upload"] == 1 and fake.stats["sketch_select"] == 1
+        assert _bars(fake.sketch, govee_rt.ble.ROLL_BAR) == [0] and not fake.streamed
+    finally:
+        g.close()
+
+
+def test_roll_picture_marks_each_bar():
+    pic = govee_rt.ble.roll_picture(60, [0, 20, 57], bar=6)
+    assert _bars(pic, 6) == [0, 20, 57] and sum(1 for c in pic if max(c)) == 6 + 6 + 3
+
+
+def test_scene_switches_ble_mode_and_strobe_uses_the_default():
+    from govee_rt.engine import Engine
+    import govee_rt.effects as fx
+    fake = FakeBleClient(segments=20)
+    eng = Engine(1, lambda: govee_rt.GoveeBle(segments=20, mode="stream", cells=60, client_factory=lambda: fake),
+                 fps=30, scene={"layers": [fx.new_layer("solid")]})
+    eng.connect()
+    try:
+        eng._send(eng.step(0.0, 1 / 30))
+        assert eng.light.mode == "stream"
+        eng.set_scene({"ble_mode": "roll", "layers": [fx.new_layer("bass_pulse")]})
+        eng._send(eng.step(0.1, 1 / 30))
+        assert eng.light.mode == "roll"
+        eng.strobe(True, hold=5)
+        eng._send(eng.step(0.2, 1 / 30))
+        assert eng.light.mode == "stream"                   # strobe flashes are whole-strip frames
+        eng.strobe(False)
+        eng._send(eng.step(0.3, 1 / 30))
+        assert eng.light.mode == "roll"
+        eng.set_scene({"layers": [fx.new_layer("solid")]})
+        eng._send(eng.step(0.4, 1 / 30))
+        assert eng.light.mode == "stream"                   # back to the profile's mode
+        eng.light.flush()
+        assert fake.bad == 0
+    finally:
+        eng.stop()
+
+
+def test_roll_flash_rolls_palette_bars_and_flashes_brightness_on_hits():
+    ble = govee_rt.ble
+    fake = FakeBleClient(segments=20)
+    g = govee_rt.GoveeBle(segments=20, mode="roll_flash", cells=60, client_factory=lambda: fake)
+    neon = [(248, 0, 168), (0, 224, 248), (128, 0, 248), (56, 248, 16)]   # on the sketch's 8-step grid
+    try:
+        g.set_roll_colors(neon)
+        levels = []
+        for level in (0.3, 1.0, 0.3, 1.0, 0.6, 1.0, 0.3, 0.0):   # rest, kicks, a run, dark
+            g.rt_frame([(int(255 * level), 0, 0)] * 20)
+            g.flush(timeout=2)
+            levels.append(fake.brightness)
+        assert levels == [30, 100, 30, 100, 60, 100, 30, 1]     # the flash rides on brightness
+        assert fake.stats["sketch_upload"] == 1                 # bars never re-uploaded on hits
+        bars = _bars(fake.sketch, ble.ROLL_BAR)
+        assert bars == [0, 15, 30, 45] and fake.sketch_effect == ble.ROLL_EFFECT
+        assert [fake.sketch[b] for b in bars] == neon           # one palette color per bar
+        g.set_roll_colors(neon[::-1])                           # palette changed in the studio
+        g.rt_frame([(255, 0, 0)] * 20)
+        g.flush(timeout=2)
+        assert fake.stats["sketch_upload"] == 2 and fake.sketch[0] == neon[-1]
+        g.rt_disable()
+        assert fake.brightness == 100 and fake.bad == 0         # never left dimmed
+    finally:
+        g.close()
+
+
+def test_engine_feeds_the_scene_palette_to_roll_flash():
+    from govee_rt.engine import Engine
+    import govee_rt.effects as fx
+    fake = FakeBleClient(segments=20)
+    eng = Engine(1, lambda: govee_rt.GoveeBle(segments=20, mode="stream", cells=60, client_factory=lambda: fake),
+                 fps=30, scene={"ble_mode": "roll_flash", "layers": [fx.new_layer("bass_pulse", params={
+                     "palette": ["#ff0000", "#00ff00"]})]})
+    eng.connect()
+    try:
+        eng._send(eng.step(0.0, 1 / 30))
+        eng.light.flush()
+        assert eng.light.mode == "roll_flash"
+        bars = _bars(fake.sketch, govee_rt.ble.ROLL_BAR)
+        assert [fake.sketch[b] for b in bars] == [(255, 0, 0), (255, 0, 0), (0, 255, 0), (0, 255, 0)]
+    finally:
+        eng.stop()

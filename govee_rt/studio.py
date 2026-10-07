@@ -12,6 +12,8 @@ cross-site form can't post) and the Host header must be local (so DNS rebinding 
     GET  /api/presets/<name>    load a preset (does not apply it)
     PUT  /api/presets/<name>    save a scene as a user preset
     DELETE /api/presets/<name>  delete a user preset
+    POST /api/strobe            {"on": true|false, "hz": 1..15}: hold-to-strobe; re-send on=true
+                                while held, it stops by itself 0.6 s after the last one
 """
 
 import json
@@ -144,6 +146,10 @@ def make_handler(engine, presets, device=None):
                 body = self._json_body()
                 if path == "/api/scene":
                     return self._send(200, engine.set_scene(body))
+                if path == "/api/strobe" and self.command == "POST":
+                    body = body or {}
+                    engine.strobe(bool(body.get("on")), hz=body.get("hz"))
+                    return self._send(200, {"strobe": engine.strobing(), "hz": engine.strobe_hz})
                 if path.startswith("/api/presets/"):
                     scene = presets.save(self._preset_name(path), body)
                     return self._send(200, {"saved": scene["name"], "presets": presets.list()})

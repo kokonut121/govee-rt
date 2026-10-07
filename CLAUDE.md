@@ -155,6 +155,129 @@ Bass sync session (2026-10-07, brief in `docs/BASS_SYNC_PROMPT.md`):
   `reactive` effect (spectrum, meter, pulse, bass_pulse, ripple, strobe), overridable with
   `"idle": true/false` in the scene. Of the presets, Bass Pulse, Neon Bass and Spectrum idle;
   plasma/gradient/paint/fire based ones keep showing through silence.
+- 2026-10-08, owner asks (song: "Desire", Ian Asher): (1) the trilled high note in the intro
+  ("is it desireeee") should flicker the lights fast between mid and high; (2) slow bass with
+  busy high beats gives an on/off "epilepsy" flicker; (3) held-out beats should hold the light
+  as long as they ring. Built as a separate user preset `Neon Bass Desire` (Neon Bass +
+  `hit_min` 0.5, `sustain` 0.5, `trill` 0.3) so the owner can compare; all three default off.
+  - (2) cause, reproduced on a synth track (one kick per bar + 16th claps): claps fire `beat`
+    at `bass_slow` 0.31..0.47 and `kick_boost` flashed each one from off (4.9 flips/s vs 1.2
+    expected). `beat_share` (bass share of the onset's spectral rise: kicks 0.16..1.0, claps
+    0.05..0.09) gates beats when `hit_min` > 0, so kicks still light on their first block (no
+    added latency, checked); level hits need `bass_slow` >= `hit_min`. Result 1.1 flips/s.
+  - (3) a kick with a held 808 tail went dark after ~0.2 s; `sustain` 0.5 keeps it lit for
+    the note's length (1.2/0.4/0.8 s notes lit 1.22/0.47/0.83 s); plain kicks 0.23 -> 0.30 s.
+  - (1) analyzer `trill`: pitch of the loudest partial 250..4000 Hz on a quarter-semitone grid,
+    trill when it swings >= 0.3 st around its center 3..14 times/s on a tonal frame. ~0.5 s to
+    lock on, then flips with every half cycle. Synth: 7 Hz trill detected, held note / 1.5 Hz
+    alternation / kicks / claps never. Overrides the dark state, mid <-> full, never off.
+  - `bass_slow` peak now floored at raw 0.15 (`SLOW_FLOOR`, a mastered kick reads ~0.4): with
+    the old silence floor, a song starting after silence read pad/hat leakage as full bass.
+    Applies to every preset that uses `bass_slow`.
+  - Owner on the strip: "the desire intro just shows a solid color for the whole time n for
+    some of the trill its just dark too"; quick beats in succession "registers as one ... holds
+    a solid color for the whole succession". Owner's rule: quick beats alternate mid <-> bright
+    on each hit, distinct beats go off <-> bright.
+- Round 2 (2026-10-08), tuned on a BlackHole recording of Desire (scratchpad only, not kept):
+  - The "trill" is not a pitch trill: the held "desireeee" is a steady B5 (~990 Hz, 66.13 to
+    66.75 s from play) whose loudness pulses 8.6 times/s, ~20 dB deep, over other voices that
+    take the top in every quiet half. Same motif returns at ~179 s (C6). Analyzer `trill` now
+    also detects that: the note that tops most loud frames over 0.35 s, its own level vs its
+    median, >= 4 regular flips (two pulses) >= 8 dB deep, then latched until the note stops.
+    On the recording it fires only on those two notes (66.47..66.83, 179.43..179.75) among the
+    dark sections; a fast melody at 92 s and arpeggios elsewhere do not. Lock-on needs two
+    pulses (~0.23 s), so the first third of the note stays dark.
+  - Effect only follows the trill in the dark state; with bass present, arps and gated synths
+    also pulse and would strobe.
+  - Solid color: `sustain` 0.5 held the light through the whole drop because this song's sub
+    sits at ~0.6 of the kick peak between kicks (100% lit 67..90 s). Now `sustain` needs the
+    level within that fraction of the hit's peak and no new onset; preset 0.75.
+  - Quick beats: analyzer `onset` (90 ms refractory; `beat` keeps 250 ms), engine latches it.
+    `run_gap` 0.3: kicks closer than that toggle full <-> soft and the light stays up through
+    the run; any kick landing while lit toggles. Recording: busy section 68..90 s 4.6 level
+    changes/s, off 5%, mid 31%, full 65%; spaced kicks 124..140 s off/full like Neon Bass.
+  - Synthetic 8-kick roll at 0.15 s: 7 of 8 kicks detected; at 0.117 s (16ths at 128) 6 of 8.
+  - Preset `Neon Bass Desire`: hit_min 0.5, sustain 0.75, trill 0.3, run_gap 0.3.
+- Owner (2026-10-08) on the trill flicker: "it should flicker faster like a strobe and when its
+  doing that it shouldnt be changing color" (asked: this is the high-note trill, not quick
+  beats). New `trill_strobe` (flashes/s): during a trill in the dark, full / off at that rate
+  in the current color, no mid level (dim levels shift hue on the strip). Preset 15/s, the
+  ceiling at 30 rendered frames/s. Recording: 6 flashes on the "desireeee" note, 3 on the
+  179 s repeat, one color each. Not yet checked on the strip.
+- Owner: the strobe fired on "is it", not "desireeee", and not at all on the second one. Owner's
+  timing (song clock): "is it" is the pulsing B5 at ~0:03.6-0:04.2 (recording 66.1-66.75 s,
+  recording = song + 62.5 s), "desireeee" starts at 0:05 as the bass drops in, second at ~0:12.
+  The trill there is real pitch alternation: A5 (~885 Hz, drifting like a voice) glides up,
+  then C6 (~1050) <-> A5/G#5 (~820-890) every ~0.1 s, over the drop. Tried on the recording,
+  none usable: top-partial two-note alternation (1024 and 2048 FFT, 750-1400 Hz) also fires
+  on ~40 synth-arpeggio spots per 2 min (the synths play 16ths in the same range, 8.6/s =
+  16ths at 128 BPM); balance / run-length / pitch-wobble / center-channel (L/R corr 0.77)
+  filters either kept the arps or dropped the vocal. Per-bin 6-12 Hz AM fires everywhere.
+  Separating this vocal from the arps needs source separation (ML), outside numpy-only.
+- So the drop-time trill is manual: studio "Hold to strobe" button + space bar
+  (`POST /api/strobe`, engine `strobe()`): full / off up to 15/s, color locked at press,
+  stops by itself 0.6 s after the page stops re-sending. Auto trill strobe on "is it" kept
+  (owner: "keep the auto strobe for now").
+- Owner: "for the desire at 0.36 the light just off too". 0:34.5-0:38 has bass at ~half the
+  drop (`bass_slow` 0.47-0.55) so `hit_min` 0.5 dropped most hits (35% lit; Neon Bass 80%).
+  Preset `hit_min` 0.4: 54% lit there; clap test 5 flashes for 4 kicks (0.5: 4, 0: 10).
+- Owner: "the strobe is pretty laggy". Measured on the strip: the studio renders at 40 fps
+  (profile-based BLE stream does not pick STREAM_FPS 30), the 15/s strobe flipped on a 33 ms
+  threshold over 25 ms frames, so flashes were 1 or 2 frames long, and only 27 of 40 frames/s
+  became writes. Now the hold strobe runs on its own clock in `run()` (one frame per flip,
+  beat wake-ups ignored while strobing), default 10/s with a 4..15/s slider next to the
+  button. Measured: 20.5 frames/s = 20.5 writes/s, evenly spaced. Trill strobe flips offset
+  by a quarter period so frame jitter can't make uneven flashes; preset trill_strobe 10/s.
+- 2026-10-08 owner: "the strip stopped syncing to music ... but i can still turn it on with the
+  strobe button". The running studio predated the `live_blocks()` stall recovery: PortAudio
+  logged `PaMacCore (AUHAL) err='-10863'`, the audio features froze (identical in every
+  /api/live sample while frames kept counting), no hits, strip black. Restarting on the current
+  code fixed it (features moving, colors flashing). Two sessions edited this repo that day.
+- Rolling bar per hit (owner ask): BLE can't move a bar frame by frame (stream is whole-strip,
+  sketch uploads ~3/s), so the plan is a 60-cell picture with one bar at cell 1 rolled by the
+  strip (effect 0x09) and a mode select per kick to restart it. `tools/music_probe.py rollbar`
+  ran 2026-10-08 14:16 (speed 100, speed 60, then 6 restarts 1.5 s apart): every select ACKed
+  in 107..191 ms with the speaker playing. Owner: "the first few rolling animations looked
+  really good and it was in the direction i wanted too" (right to left, speeds 100 and 60).
+  Restart rerun (`rollrestart`, speed 60, 6 s untouched then a select every 3 s, ACKs 99..128
+  ms): owner "keeps snapping back. speed 100 pls 60 is too slow".
+- Built: BLE mode `roll` (`GoveeBle._send_roll`): upload the bar picture once (cell 1 = owner's
+  right end, magenta, effect 0x09 speed 100), a mode select on every hit (frame turns lit, or a
+  lit frame steps >= 0.3, so Bass Pulse run toggles count), max one per 0.15 s, skip not queue;
+  1 s of dark frames sends one stream black frame (stream frames take over from the sketch);
+  rt_enable / idle rainbow / show_sketch force a re-upload. Scenes may carry `"ble_mode":
+  "roll"`; the engine switches the light to it and back to the profile's mode for other scenes,
+  and uses the profile's mode while the hold strobe runs. Built-in preset `Rolling Bar`
+  (bass_pulse, hit_min 0.4, run_gap 0.3, trill off). Desire recording: 0 bars/s in the intro,
+  3.0/s in the drop, 0.9/s in the 0:29-0:38 breakdown, median 0.375 s apart. Bar color is fixed
+  (no per-hit color: a re-upload costs ~0.3 s). Not yet seen on the strip; also unverified:
+  whether a select after the stream black brings the bar back.
+- Owner on the strip: "right now its a pink line with an orange head ... theres no end to the
+  bar it just extends out. go back to the previous magenta bar thing that was great", and "the
+  bar resetting kills the old bar. i want the old bars to go fully from right to left and a hit
+  just adds a new bar". Likely the strip's draw-in of effect 0x09 cut off by ~3 selects/s
+  (unconfirmed). Reverted `roll` to upload once and leave it rolling (no per-hit select, no
+  stream black). Several bars at once needs a re-upload per hit with the old bars at their
+  current positions, which needs the roll speed in cells/s at speed 100 (unmeasured).
+- Owner timing of one pass at speed 100: first "2-3 seconds", then "actually its more like
+  1-1.5 seconds" -> `ROLL_CELLS_PER_S` 48. Owner: "make it a new preset". `roll` = one bar
+  uploaded once (preset `Rolling Bar`, kept as the owner liked it); `roll_hits` = a bar per
+  hit (preset `Rolling Hits`): each hit uploads a picture with the bars in flight where the
+  roll has carried them when the strip starts it (upload delay measured per upload, select
+  counted at half its ACK RTT) plus the new bar drawn v x delay cells in; a bar is dropped
+  before its head reaches the end (the roll would wrap it). First run with music: 17 uploads
+  in 5 s, 3 bars in flight, 1 ACK timeout. Owner: "they're like rlly laggy" (each upload
+  restarts the strip's roll, same as the 3/s selects). Not fixable over BLE; options offered.
+- Owner picked "bars + flash", "with multicolored color themes like neon". BLE mode
+  `roll_flash`: 4 bars spread evenly, colors picked evenly from the scene's first palette
+  (engine `_scene_palette()` -> `set_roll_colors()`, a palette change re-uploads), uploaded once
+  and rolled by the strip (0x09, speed 100); the scene's level rides on brightness `33 04`
+  (ACK-paced, >= 4 % steps, latest wins), `rt_disable()` restores 100. Preset `Rolling Neon`
+  (bass_pulse, neon palette, floor 0.3, soft 0.6, gamma 1.0: rest 30 %, run toggles 100/60,
+  dark 1 %). First run with music through the Marshall: 30 brightness writes in 6 s, all 30
+  ACKed, 0 timeouts, 0 re-uploads. Owner: "ok great", then stopped for the day (studio exited
+  through stop(): rt_disable restores brightness 100). Still to ask: is the 30 % rest level
+  right, and do the bars stay smooth while the brightness flashes.
 - Still open from the baseline: some kicks missed (knob: `threshold` toward 0.6) and flashes "a
   little late" (try `--block 512`). Stage 2 not started: owner has not yet confirmed hits on the
   beat and the drop out of black at full.
@@ -186,6 +309,13 @@ strip and Mac on an iPhone hotspot (Maximize Compatibility) before buying anythi
   jerky); `0x13` gradient fades smoothly (owner's pick for idle, speed 50); `0x02` cycle less smooth.
 - Idle: after 3 s of silence on BlackHole (RMS < 1e-3) the engine shows a 60-cell rainbow with
   `0x13` speed 50 and stops streaming; any audio hands control straight back.
+- Speaker lag after the Marshall reconnects (2026-10-07): it comes back at 44.1 kHz (its only
+  rate) while BlackHole stayed at 48 kHz, so the Multi-Output Device resampled against a
+  mismatched clock and the speaker stuttered. Setting BlackHole to 44.1 kHz fixed it (owner: "its
+  good now"). `live_blocks()` now does this itself via `macaudio.py` (CoreAudio over ctypes): a
+  capture device inside the default output is kept at the output's rate, checked every 2 s, and
+  a stream that delivers nothing for 1 s is reopened (changing the rate under an open stream
+  froze the old studio's capture). An explicit `--samplerate` disables the sync.
 - Bring-up notes: the Mac's Wi-Fi is WPA2-Enterprise 10.10.0.0/18, which the strip can't join.
   The Claude app needs macOS Local Network permission, or every LAN send fails with errno 65.
 
@@ -208,6 +338,10 @@ strip and Mac on an iPhone hotspot (Maximize Compatibility) before buying anythi
   `F/COLOR/PAL/BOOL/CHOICE/SEGMENTS` helpers so the studio builds the editor automatically.
   `tests/test_effects.py` renders every registered effect, so a new one is tested for free.
 - The UI is one static `web/index.html` with vanilla JS and no build step. Keep it that way.
+  Look (2026-10-07 revamp): monochrome glass chrome, the only color on screen comes from the
+  lights (strip preview + room glow from `--spill`). System font, no web fonts, white for
+  selected/on states, green only for switches. Motion uses the `--spring` easing (critically
+  damped, 0.4 s); press feedback is instant on pointer-down.
 - Add a test for anything protocol-level or DSP-level. Use the fake device and
   `tests/make_test_wav.synth()`; nothing in CI may need hardware or an audio device.
 - No em dashes in docs or comments.

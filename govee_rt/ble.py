@@ -146,6 +146,51 @@ def sketch_plan(colors, cells, quant=8, effect=SKETCH_EFFECT_STILL, speed=0):
 STREAM_FPS = 30
 STREAM_MIN_GAP = 1 / 45
 
+# ---- Rolling bar ("roll": one bar rolling; "roll_hits": a bar per hit). The Mac can't move a bar along the strip over BLE (the
+# stream is one color for the whole strip, sketch uploads manage ~3/s), so the strip moves it:
+# a picture that is one bar at cell 1 (the owner's right end), rolled by sketch effect 0x09.
+# Re-sending only the mode select restarts the roll from the start: the owner saw the bar snap
+# back to the right end on every select (2026-10-08, speed 60, every 3 s), and liked the
+# direction (right to left) and speed 100. A bare select on every hit (~3/s) killed the bar
+# in flight and looked broken, and the owner wants every hit to ADD a bar while the old ones
+# finish their pass. The strip only rolls one stored picture, so each hit uploads a new one:
+# every bar in flight drawn where it is when the strip starts rolling the new picture, plus
+# the new bar (drawn a little in from the end, where it would be had it started on the kick).
+# A bar about to reach the left end is dropped by another upload, or the roll would wrap it
+# back to the right end. Positions come from ROLL_CELLS_PER_S and the measured upload delay.
+
+ROLL_EFFECT = 0x09
+ROLL_SPEED = 100
+ROLL_CELLS_PER_S = 48.0        # owner: a pass takes "1-1.5 seconds" at speed 100; 60 cells / 1.25 s
+ROLL_BAR = 6                   # lit cells per bar
+ROLL_COLOR = (255, 0, 170)     # the magenta the owner watched
+ROLL_LIT = 0.2                 # frame peak (0..1) above which the scene is "lit"
+ROLL_STEP = 0.3                # a lit frame this much brighter or dimmer than the last is a new hit
+ROLL_MIN_GAP = 0.12            # s between bars
+ROLL_DELAY0 = 0.2              # first guess of upload start -> strip rolling, then measured
+
+
+ROLL_FLASH_BARS = 4            # "roll_flash": evenly spaced bars, one palette color each
+ROLL_FLASH_STEP = 4            # brightness % change worth an ACKed write
+
+
+def roll_picture(cells, positions=(0,), bar=ROLL_BAR, color=ROLL_COLOR, colors=None):
+    """60-cell picture with a bar starting at each position (cell 0 = the right end).
+    colors: one per bar (cycled), else all `color`."""
+    pic = [(0, 0, 0)] * cells
+    for k, p in enumerate(positions):
+        c = colors[k % len(colors)] if colors else color
+        for i in range(max(0, int(p)), min(cells, int(p) + bar)):
+            pic[i] = c
+    return pic
+
+
+def roll_flash_picture(cells, colors, bars=ROLL_FLASH_BARS, bar=ROLL_BAR):
+    """Bars spread evenly around the strip, colors picked evenly from the palette."""
+    colors = list(colors) or [ROLL_COLOR]
+    picks = [colors[(k * len(colors)) // bars] for k in range(bars)]
+    return roll_picture(cells, [round(k * cells / bars) for k in range(bars)], bar=bar, colors=picks)
+
 
 def stream_frame(r, g, b):
     p = bytes([0xA5, 0x02, 0x83, int(r) & 255, int(g) & 255, int(b) & 255])
@@ -234,6 +279,8 @@ class GoveeBle:
         self._state = None
         self._rr = 0
         self._last_enable = 0.0
+        self.default_mode = mode
+        self._roll_reset()
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
@@ -416,6 +463,8 @@ class GoveeBle:
                     continue
                 if self.mode == "stream":
                     await self._send_stream(colors)
+                elif self.mode in ("roll", "roll_hits", "roll_flash"):
+                    await self._send_roll(colors)
                 elif self.mode == "hybrid":
                     await self._send_hybrid(colors)
                 else:
@@ -440,6 +489,103 @@ class GoveeBle:
             return
         await self._write(stream_frame(*col))
         self._stream_sent, self._last_stream = col, time.monotonic()
+
+    def _roll_reset(self):
+        self._roll_ready = False       # a picture is uploaded and rolling
+        self._roll_bars = []           # launch times (monotonic) of the bars in that picture
+        self._roll_hits = []           # hit times from rt_frame, not yet drawn (under _plock)
+        self._roll_prev = 0.0
+        self._roll_last_hit = -1e9
+        self._roll_delay = ROLL_DELAY0
+        if not hasattr(self, "_roll_colors"):
+            self._roll_colors = [ROLL_COLOR]
+
+    def _roll_hit(self, colors):
+        """Called from rt_frame (every frame, so dropped frames can't hide a kick). A hit is a
+        frame that turns lit, or a lit frame that steps by ROLL_STEP (Bass Pulse runs toggle)."""
+        peak = max((max(c) for c in colors), default=0) / 255.0
+        prev, self._roll_prev = self._roll_prev, peak
+        now = time.monotonic()
+        if (peak >= ROLL_LIT and (prev < ROLL_LIT or abs(peak - prev) >= ROLL_STEP)
+                and now - self._roll_last_hit >= ROLL_MIN_GAP):
+            self._roll_last_hit = now
+            self._roll_hits.append(now)
+
+    def _roll_pos(self, launch, t):
+        return ROLL_CELLS_PER_S * (t - launch)
+
+    async def _send_roll(self, colors):
+        """"roll": one bar, uploaded once and left rolling (the owner's favourite on its own).
+        "roll_hits": a bar per hit; old bars finish their pass."""
+        if self.mode == "roll":
+            if not self._roll_ready:
+                await self._roll_upload([], positions=[0])
+            return
+        if self.mode == "roll_flash":
+            await self._send_roll_flash(colors)
+            return
+        with self._plock:
+            hits, self._roll_hits = self._roll_hits, []
+        now, d, end = time.monotonic(), self._roll_delay, self.cells - ROLL_BAR
+        # a bar must be gone before its head reaches the end, or the roll wraps it to the start
+        leaving = any(self._roll_pos(b, now + 2 * d) > end for b in self._roll_bars)
+        if hits or leaving or not self._roll_ready:
+            await self._roll_upload(self._roll_bars + hits)
+
+    def set_roll_colors(self, colors):
+        """Palette for the "roll_flash" bars (0..255 RGB tuples); a change re-uploads them."""
+        colors = [tuple(int(v) for v in c) for c in colors][:8] or [ROLL_COLOR]
+        if colors != self._roll_colors:
+            self._roll_colors = colors
+            self._roll_ready = False
+
+    async def _send_roll_flash(self, colors):
+        """Bars + flash: the colored bars roll on the strip untouched; the scene's brightness
+        (Bass Pulse: full on a kick, rest between, ~off when dark) rides on the brightness
+        command, ACK-paced, latest wins. Brightness changes don't interrupt the roll."""
+        if not self._roll_ready:
+            pic = roll_flash_picture(self.cells, self._roll_colors)
+            frames, _ = sketch_plan(pic, self.cells, effect=ROLL_EFFECT, speed=ROLL_SPEED)
+            for f in frames:
+                await self._write(f)
+            await self._write_acked(sketch_select(self.sketch_code))
+            self._roll_ready = True
+            self._sketch_pic = self._stream_sent = None
+            self.stats["roll_uploads"] += 1
+        peak = max((max(c) for c in colors), default=0)
+        pct = max(1, round(peak / 255 * 100))
+        sent = self._bright_sent
+        if sent is None or abs(pct - sent) >= ROLL_FLASH_STEP or (pct == 1) != (sent == 1) or (pct == 100) != (sent == 100):
+            await self._write_acked(ble_brightness(pct), 0.4)
+            self._bright_sent = pct
+            self.stats["roll_flashes"] += 1
+
+    async def _roll_upload(self, bars, positions=None):
+        t0 = time.monotonic()
+        d = self._roll_delay
+        t_roll = t0 + d                                    # when the strip will start this picture
+        keep = [b for b in bars if self._roll_pos(b, t_roll + d) <= self.cells - ROLL_BAR]
+        if positions is None:
+            positions = [round(self._roll_pos(b, t_roll)) for b in keep]
+        pic = roll_picture(self.cells, positions)
+        frames, _ = sketch_plan(pic, self.cells, effect=ROLL_EFFECT, speed=ROLL_SPEED)
+        for f in frames:
+            await self._write(f)
+        t_sel = time.monotonic()
+        ack = await self._write_acked(sketch_select(self.sketch_code), 0.4)
+        if ack is not None:                                # the strip acts on the select ~half an RTT in
+            took = (t_sel - t0) + (time.monotonic() - t_sel) / 2
+            self._roll_delay = 0.7 * d + 0.3 * took
+        self._roll_bars, self._roll_ready = keep, True
+        self._sketch_pic = self._stream_sent = None
+        self.stats["roll_uploads"] += 1
+        self.stats["roll_bars"] = len(keep)
+
+    def set_mode(self, mode):
+        """Switch how frames are sent (e.g. a scene that wants "roll"), effective next frame."""
+        if mode and mode != self.mode:
+            self.mode = mode
+            self.rt_enable()
 
     async def _send_hybrid(self, colors):
         """Brightness command carries the beat (~10/s, ACKed); a sketch upload carries the
@@ -488,10 +634,12 @@ class GoveeBle:
             await self._write_acked(sketch_select(self.sketch_code))
             self._state = self._sketch_pic = self._stream_sent = None
             self._bright_sent = 100
+            self._roll_ready = False    # the bar picture was replaced
         self._run(go(), 10)
 
     def rt_enable(self):
         self._state = self._sketch_pic = self._stream_sent = self._bright_sent = None
+        self._roll_reset()          # the strip may show something else now: re-upload the bar
         if self.mode == "razer":
             self._run(self._write(razer_frame(0xB1, b"\x01")))
             self._last_enable = time.monotonic()
@@ -502,7 +650,7 @@ class GoveeBle:
         try:
             if self.mode == "razer":
                 self._run(self._write(razer_frame(0xB1, b"\x00")))
-            elif self.mode == "hybrid" and self._bright_sent not in (None, 100):
+            elif self.mode in ("hybrid", "roll_flash") and self._bright_sent not in (None, 100):
                 self._run(self._write_acked(ble_brightness(100)))   # don't leave the strip dimmed
                 self._bright_sent = 100
         except Exception:
@@ -519,6 +667,8 @@ class GoveeBle:
             if self._pending is not None:
                 self.stats["frames_dropped"] += 1
             self._pending = colors
+            if self.mode == "roll_hits":
+                self._roll_hit(colors)
         self._loop.call_soon_threadsafe(self._wake.set)
 
     def flush(self, timeout=2.0):

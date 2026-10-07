@@ -259,6 +259,58 @@ def test_studio_rejects_bad_input_and_foreign_hosts(studio):
     assert call(port, "PUT", "/api/presets/..%2Fx", fx.default_scene())[0] == 400
 
 
+def test_studio_strobe_endpoint_holds_then_times_out(studio):
+    port, eng = studio
+    assert call(port, "POST", "/api/strobe", {"on": True}) == (200, {"strobe": True, "hz": 10.0})
+    assert eng.strobing()
+    time.sleep(0.8)
+    assert not eng.strobing()                               # no refresh: stops by itself
+    call(port, "POST", "/api/strobe", {"on": True})
+    assert call(port, "POST", "/api/strobe", {"on": False, "hz": 40}) == (200, {"strobe": False, "hz": 15.0})
+    assert call(port, "POST", "/api/strobe", {"on": True}, host="evil.example")[0] == 403
+    assert call(port, "PUT", "/api/strobe", {"on": True})[0] == 404   # POST only
+
+
+def test_engine_strobe_one_color_full_and_off_then_back():
+    eng = Engine(4, fps=30, scene={"layers": [fx.new_layer("solid", params={"color": "#802000"})],
+                                   "master": {"gamma": 1.0}})
+    before = eng.step(0.0, 1 / 30)
+    eng.strobe(True, hold=5)
+    frames = [eng.step(k / 30, 1 / 30) for k in range(1, 31)]  # 1 s at 30 fps
+    full = (255, 64, 0)                                     # same hue, raised to full
+    assert {f[0] for f in frames} == {full, (0, 0, 0)} and all(len(set(f)) == 1 for f in frames)
+    assert all(a != b for a, b in zip(frames, frames[1:]))  # flips every frame: 15 flashes/s
+    eng.strobe(False)
+    assert eng.step(2.0, 1 / 30) == before                  # back to the scene
+
+
+def test_strobe_runs_on_its_own_even_clock_while_beats_keep_coming():
+    sent = []
+
+    class Light:
+        def power(self, on): pass
+        def rt_enable(self): pass
+        def rt_disable(self): pass
+        def close(self): pass
+        def rt_frame(self, colors): sent.append((time.monotonic(), colors[0]))
+
+    eng = Engine(1, Light, fps=40, scene={"layers": [fx.new_layer("solid", params={"color": "#00ff00"})]})
+    eng.use_demo(160)                                       # demo beats wake the loop early
+    eng.connect()
+    eng.start()
+    time.sleep(0.3)
+    eng.strobe(True, hold=5, hz=10)
+    t0 = time.monotonic()
+    time.sleep(1.0)
+    eng.stop()
+    flashes = [(t, c) for t, c in sent if t >= t0 + 0.05]
+    gaps = [b[0] - a[0] for a, b in zip(flashes, flashes[1:]) if b[0] < t0 + 0.95]
+    assert 17 <= len(gaps) <= 20                            # 20 flips/s for a 10/s strobe
+    assert max(abs(g - 0.05) for g in gaps) < 0.015         # evenly spaced, not 25/50 ms mixed
+    cols = [c for t, c in flashes if t < t0 + 0.95]
+    assert all(a != b for a, b in zip(cols, cols[1:])) and set(cols) == {(0, 255, 0), (0, 0, 0)}
+
+
 def test_studio_live_stream(studio):
     port, _ = studio
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -451,3 +503,176 @@ def test_non_reactive_scene_keeps_showing_in_silence():
     time.sleep(0.8)
     eng.stop()
     assert fake.sketch_effect == 0x13 and fake.bad == 0
+
+
+# ----------------------------------------------------------------------------- Desire tuning
+
+def _bass_pulse_run(x, sr, **params):
+    from govee_rt.audio import Analyzer
+    block = 1024
+    an = Analyzer(sr, 15, block)
+    base = {"palette": "white", "color_every": 0, "floor": 0.0, "strong": 0.75, "soft": 0.45}
+    r = fx.Renderer(1, {"layers": [fx.new_layer("bass_pulse", params=dict(base, **params))],
+                        "master": {"gamma": 1.0}})
+    frames = []
+    for i in range(0, len(x) - block, block):
+        f = an.process(x[i:i + block])
+        frames.append((an.t, max(r.render(f, an.t, block / sr, f["beat"])[0]), f))
+    return frames
+
+
+def _lit_runs(frames, t0=2.0):
+    runs, start, armed = [], None, False
+    for t, v, _ in frames:
+        if t < t0:
+            continue
+        if not armed:                                      # skip a flash already lit at t0
+            armed = v == 0
+            continue
+        if v > 0 and start is None:
+            start = t
+        elif v == 0 and start is not None:
+            runs.append((start, t))
+            start = None
+    return runs
+
+
+def test_hit_min_stops_clap_flicker_over_a_sparse_kick():
+    from make_test_wav import synth
+    sr, x, kicks = synth(bpm=128, seconds=10, kick_every=4, claps=0.35)
+    before = _lit_runs(_bass_pulse_run(x, sr))
+    after = _lit_runs(_bass_pulse_run(x, sr, hit_min=0.5))
+    kicks_after_2s = [k for k in kicks if k >= 2.0]
+    assert len(before) > 2 * len(kicks_after_2s)            # the flicker the owner saw
+    assert len(after) == len(kicks_after_2s)                # one flash per kick, nothing else
+    assert all(min(abs(a - k) for k in kicks) < 0.05 for a, _ in after)
+
+
+def test_hit_min_costs_no_latency_on_kicks():
+    from make_test_wav import synth
+    sr, x, kicks = synth(bpm=128, seconds=8, kick_gains=(1.0, 0.4))
+    def onsets(frames):
+        return [min(t for t, v, _ in frames if t >= k and v > 0) - k for k in kicks if k >= 2]
+    assert onsets(_bass_pulse_run(x, sr, hit_min=0.5)) == onsets(_bass_pulse_run(x, sr))
+
+
+def test_sustain_holds_a_held_bass_note():
+    from make_test_wav import synth
+    b = 60 / 128
+    notes = ((11 * b, 1.2), (15 * b, 0.4), (17 * b, 0.8))
+    sr, x, kicks = synth(bpm=128, seconds=10, kick_gap=(4.9, 10), bass_notes=notes)
+    def lit_for(frames):
+        runs = _lit_runs(frames)
+        return [next(e - s for s, e in runs if abs(s - t0) < 0.05) for t0, _ in notes]
+    held = lit_for(_bass_pulse_run(x, sr, hit_min=0.5, sustain=0.75))
+    for (_, length), lit in zip(notes, held):
+        assert length - 0.05 <= lit <= length + 0.15        # held as long as the note rings
+
+
+def test_sustain_does_not_hold_through_a_sub_bass_wall():
+    from make_test_wav import synth
+    sr, x, kicks = synth(bpm=128, seconds=8)
+    t = np.arange(len(x)) / sr
+    x = x + (0.25 * np.sin(2 * np.pi * 55 * t)).astype(np.float32)   # steady sub under every kick
+    x /= np.abs(x).max() * 1.05
+    runs = _lit_runs(_bass_pulse_run(x, sr, hit_min=0.5, sustain=0.75, run_gap=0.3))
+    assert len(runs) >= len([k for k in kicks if k > 2.2]) - 1   # off between kicks, not one block
+
+
+def test_trill_detected_only_on_a_trilled_note():
+    from make_test_wav import synth
+    from govee_rt.audio import Analyzer
+    for trill, expect in (((3, 6, 620, 2, 7), True), ((3, 6, 620, 0, 0), False),
+                          ((3, 6, 620, 2, 1.5), False)):
+        sr, x, _ = synth(bpm=128, seconds=8, trill=trill, claps=0.2)
+        an = Analyzer(sr, 15, 1024)
+        out = []
+        for i in range(0, len(x) - 1024, 1024):
+            f = an.process(x[i:i + 1024])
+            out.append((an.t, f["trill"]))
+        inside = [v for t, v in out if 3.7 < t < 6]
+        assert max(v for t, v in out if t < 2.9 or t > 6.3) == 0     # kicks, claps, pad: never
+        assert (min(inside) > 0.5) if expect else (max(inside) == 0)
+
+
+def test_trill_strobe_is_fast_on_off_in_one_color():
+    from make_test_wav import synth
+    sr, x, _ = synth(bpm=128, seconds=7, kick_gap=(0, 7), pulse=(3.0, 4.0, 1000, 8.6))
+    from govee_rt.audio import Analyzer
+    an = Analyzer(sr, 15, 1024)
+    r = fx.Renderer(1, {"layers": [fx.new_layer("bass_pulse", params={
+        "palette": ["#ff0000", "#00ff00", "#0000ff"], "floor": 0.0, "strong": 0.75, "soft": 0.45,
+        "hit_min": 0.5, "trill": 0.3, "trill_strobe": 15})], "master": {"gamma": 1.0}})
+    block, t, frames = 1024, 0.0, []
+    f = an.process(x[:block])
+    i = block
+    while t < 6.5:                                          # render at 30 fps, audio at 47 blocks/s
+        t += 1 / 30
+        while i + block <= len(x) and an.t < t:
+            f = an.process(x[i:i + block])
+            i += block
+        frames.append((t, tuple(r.render(f, t, 1 / 30, f["beat"])[0])))
+    lit = [(tt, c) for tt, c in frames if 3.0 < tt < 4.2]
+    on = [tt for tt, c in lit if max(c) > 0]
+    assert on and min(on) < 3.4
+    strobe = [c for tt, c in frames if min(on) <= tt <= max(on)]
+    assert {max(c) for c in strobe} == {0, 255}             # full and off, nothing between
+    assert len({c for c in strobe if max(c) > 0}) == 1      # one color the whole time
+    flips = sum((max(a) > 0) != (max(b) > 0) for a, b in zip(strobe, strobe[1:]))
+    assert flips >= 0.9 * 30 * (max(on) - min(on))          # on/off every frame: 15 flashes/s
+    assert max(max(c) for tt, c in frames if tt > 4.3) == 0   # stops with the note
+
+
+def test_pulse_trill_on_a_held_note_in_a_chord_but_not_on_a_melody():
+    from make_test_wav import synth
+    from govee_rt.audio import Analyzer
+    def trill_times(**kw):
+        sr, x, _ = synth(bpm=128, seconds=8, kick_gap=(0, 8), **kw)
+        an = Analyzer(sr, 15, 1024)
+        out = []
+        for i in range(0, len(x) - 1024, 1024):
+            f = an.process(x[i:i + 1024])
+            out.append((an.t, f["trill"], f["trill_up"]))
+        return out
+    out = trill_times(pulse=(3.0, 4.0, 1000, 8.6))           # Desire's B5: 8.6 pulses/s
+    on = [t for t, v, _ in out if v > 0]
+    assert on and 3.0 < min(on) < 3.35 and max(on) > 3.85   # locks on within two pulses, rides it out
+    assert all(3.0 < t < 4.1 for t in on)                    # nothing outside the note
+    ups = [u for t, v, u in out if v > 0]
+    flips = sum(a != b for a, b in zip(ups, ups[1:]))
+    assert flips >= 0.7 * 2 * 8.6 * (max(on) - min(on))      # follows each pulse
+    melody = trill_times(melody=(3.0, 5.0, 0.07))            # a fast run of different notes
+    assert max(v for t, v, _ in melody) == 0
+
+
+def test_trill_flickers_mid_to_full_through_the_dark():
+    from make_test_wav import synth
+    sr, x, kicks = synth(bpm=128, seconds=9, kick_gap=(0, 6.5), trill=(2.5, 5.5, 620, 2, 7))
+    frames = _bass_pulse_run(x, sr, hit_min=0.5, sustain=0.5, trill=0.3)
+    before = [v for t, v, _ in frames if 1.5 < t < 2.5]
+    during = [v for t, v, _ in frames if 3.2 < t < 5.4]
+    after = [v for t, v, _ in frames if 5.8 < t < 6.4]
+    assert max(before) == 0 and max(after) == 0             # no bass, no trill: dark
+    assert set(during) == {255, round(0.45 * 255)}          # only mid and full, never off
+    flips = sum(a != b for a, b in zip(during, during[1:]))
+    assert 10 <= flips / 2.2 <= 18                          # follows the 7 Hz trill (2 flips a cycle)
+    plain = _bass_pulse_run(x, sr, hit_min=0.5, sustain=0.5)
+    assert max(v for t, v, _ in plain if 3.2 < t < 5.4) == 0   # trill off: the intro stays dark
+
+
+def test_run_gap_shows_every_kick_of_a_fast_run():
+    from make_test_wav import synth
+    sr, x, kicks = synth(bpm=128, seconds=9, kick_gap=(4.0, 9), kick_rolls=((5.0, 8, 0.15),))
+    def states(frames):
+        seq = []
+        for t, v, _ in frames:
+            if 4.95 < t < 6.6 and (not seq or seq[-1] != v):
+                seq.append(v)
+        return seq
+    toggled = states(_bass_pulse_run(x, sr, hit_min=0.5, sustain=0.75, run_gap=0.3))
+    assert toggled[:2] == [0, 255] and toggled[-1] == 0
+    run = toggled[1:-1]
+    assert len(run) >= 6 and set(run) == {255, round(0.45 * 255)}   # full, soft, full, ... no off
+    assert all(a != b for a, b in zip(run, run[1:]))
+    spaced = _lit_runs(_bass_pulse_run(x, sr, hit_min=0.5, sustain=0.75, run_gap=0.3))
+    assert sum(1 for s, e in spaced if 2.0 < s < 3.9) >= 3  # beats with space still go off between

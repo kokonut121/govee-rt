@@ -14,7 +14,7 @@ import time
 import numpy as np
 
 from .audio import Analyzer
-from .effects import Renderer, normalize_scene, rgb_to_hex, sample, scene_idles
+from .effects import Renderer, normalize_scene, palette_stops, rgb_to_hex, sample, scene_idles
 
 N_BANDS = 24
 MIN_GAP = 0.015  # seconds between frames to the light (docs/PROTOCOL.md)
@@ -23,6 +23,12 @@ SILENCE_RMS = 1e-3   # about -60 dBFS: below this the computer is playing nothin
 # colors, so the idle rainbow flows without the cell-by-cell jumps of "clockwise" (0x09).
 # Owner's pick on the H612D: speed 50 (2026-10-06).
 IDLE_EFFECT = 0x13
+STROBE_HZ = 10.0     # hold-to-strobe default (flashes/s). It runs on its own even clock: on the
+                     # 40 fps frame clock a 15/s strobe came out as uneven 1- and 2-frame flashes
+                     # and the owner saw it as laggy. Each flash is one stream write, so 10/s is
+                     # 20 writes/s, inside what the BLE link delivered with the speaker playing.
+STROBE_MAX_HZ = 15.0
+STROBE_HOLD = 0.6    # s the strobe stays on after the last request (the page re-sends while held)
 IDLE_SPEED = 50
 
 
@@ -77,12 +83,18 @@ class Engine:
         self._lock = threading.Lock()
         self._feat = blank_features()
         self._beat = False
+        self._onset = False
         self._demo = None
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._live = {"colors": ["#000000"] * n, "bands": [0.0] * N_BANDS, "beat": False,
                       "features": dict.fromkeys(("bass", "mid", "high", "energy", "beat_env"), 0.0)}
         self._threads = []
+        self._strobe_until = 0.0
+        self._strobe_color = None
+        self._strobe_on = False
+        self.strobe_hz = STROBE_HZ
+        self._last_lit = (255, 255, 255)
 
     # ---- scene
     def get_scene(self):
@@ -95,6 +107,44 @@ class Engine:
             self.renderer.scene = s
         return s
 
+    def _scene_palette(self):
+        """The first enabled layer's palette as 0..255 RGB (bar colors for "roll_flash")."""
+        scene = self.renderer.scene
+        if getattr(self, "_pal_scene", None) is not scene:
+            pal = next((l["params"]["palette"] for l in scene.get("layers", [])
+                        if l.get("enabled", True) and "palette" in l.get("params", {})), "neon")
+            self._pal_cache = [tuple(int(round(255 * v)) for v in c) for c in palette_stops(pal)]
+            self._pal_scene = scene
+        return self._pal_cache
+
+    # ---- hold-to-strobe
+    def strobe(self, on=True, hold=STROBE_HOLD, hz=None):
+        """Strobe full / off in one color while held. Each call with on=True keeps it going for
+        `hold` more seconds, so a page that drops its connection can't leave the room strobing.
+        While it runs, run() renders on the strobe's own clock: one frame per flip, evenly."""
+        with self._lock:
+            if hz:
+                self.strobe_hz = max(1.0, min(STROBE_MAX_HZ, float(hz)))
+            self._strobe_until = time.monotonic() + hold if on else 0.0
+        self._wake.set()
+
+    def strobing(self):
+        return time.monotonic() < self._strobe_until
+
+    def _strobe_frame(self, colors):
+        """Replace a rendered frame with the strobe, flipping full / off on every frame (run()
+        paces strobe frames at 2 x strobe_hz). The color is locked on the first frame: the
+        brightest one showing, or the last lit one if the strip is dark, raised to full."""
+        if self._strobe_color is None:
+            c = max(colors, key=max)
+            c = c if max(c) > 0 else self._last_lit
+            k = 255.0 / max(1, max(c))
+            self._strobe_color = tuple(int(round(v * k)) for v in c)
+            self._strobe_on = True
+        else:
+            self._strobe_on = not self._strobe_on
+        return [self._strobe_color if self._strobe_on else (0, 0, 0)] * self.n
+
     # ---- audio sources
     def use_audio(self, blocks, block, name="audio"):
         """blocks: iterator of (samplerate, float32 mono block). Analyzed on a worker thread."""
@@ -106,7 +156,7 @@ class Engine:
                 for sr, x in blocks:
                     if self._stop.is_set():
                         return
-                    if an is None:
+                    if an is None or an.sr != sr:  # live input reopened at a new rate
                         an = Analyzer(sr, N_BANDS, block)
                     if len(x) != block:
                         continue
@@ -115,7 +165,9 @@ class Engine:
                         self._feat = f
                         if f["beat"]:
                             self._beat = True
-                    if f["beat"]:
+                        if f.get("onset"):
+                            self._onset = True
+                    if f["beat"] or f.get("onset"):
                         self._wake.set()
             except Exception as e:  # device unplugged etc.
                 self.source = f"{name} (stopped: {e})"
@@ -135,6 +187,9 @@ class Engine:
             return self._demo.features(t)
         with self._lock:
             f, beat, self._beat = self._feat, self._beat, False
+            onset, self._onset = self._onset, False
+        if onset and not f.get("onset"):
+            f = dict(f, onset=True)          # an onset block was overwritten before this frame
         return f, beat
 
     # ---- light
@@ -166,6 +221,14 @@ class Engine:
         if light is None or (self.idle and hasattr(light, "show_sketch")):
             return
         try:
+            if hasattr(light, "set_mode"):        # e.g. the Rolling Bar preset wants "roll"
+                want = getattr(light, "default_mode", None)
+                if not self.strobing():               # the hold strobe needs whole-strip frames
+                    want = self.renderer.scene.get("ble_mode") or want
+                if want and want != light.mode:
+                    light.set_mode(want)
+                if light.mode == "roll_flash" and hasattr(light, "set_roll_colors"):
+                    light.set_roll_colors(self._scene_palette())
             light.rt_frame(colors)
             self.stats["sent"] += 1
         except Exception as e:
@@ -183,7 +246,7 @@ class Engine:
         """Idle = real audio input silent for idle_after seconds, on a music-driven scene only."""
         if self.idle_after is None or self._demo:
             return
-        quiet = f.get("level", 0.0) < SILENCE_RMS
+        quiet = f.get("level", 0.0) < SILENCE_RMS and not self.strobing()
         if not quiet or not scene_idles(self.renderer.scene):
             self._quiet_since = None
             if self.idle:
@@ -222,6 +285,13 @@ class Engine:
                 colors = [tuple(int(v * 255) for v in c) for c in sample("rainbow", x)]
             else:
                 colors = self.renderer.render(f, t, dt, beat)
+                lit = max(colors, key=max)
+                if max(lit) > 0:
+                    self._last_lit = lit
+            if self.strobing() and not self.idle:
+                colors = self._strobe_frame(colors)
+            else:
+                self._strobe_color = None
             self._live = {"colors": [rgb_to_hex(np.array(c) / 255.0) for c in colors],
                           "features": {k: round(float(f.get(k, 0.0)), 3)
                                        for k in ("bass", "bass_slow", "mid", "high", "energy", "beat_env")},
@@ -235,11 +305,20 @@ class Engine:
         t0 = last = last_send = time.monotonic()
         next_frame = t0
         fps_t, fps_n = t0, 0
+        strobe_clock = False
         try:
             while not self._stop.is_set():
                 timeout = max(0.0, next_frame - time.monotonic())
                 woke = self._wake.wait(timeout)
                 self._wake.clear()
+                if self.strobing():
+                    if not strobe_clock:                 # first flash now, then an even clock
+                        strobe_clock, woke = True, False
+                        next_frame = time.monotonic()
+                    elif woke:
+                        continue                         # beats wait: flashes stay evenly spaced
+                elif strobe_clock:
+                    strobe_clock = False
                 now = time.monotonic()
                 if now - last_send < MIN_GAP:
                     time.sleep(MIN_GAP - (now - last_send))
@@ -252,7 +331,7 @@ class Engine:
                     self._live_fps = fps_n / (now - fps_t)
                     fps_t, fps_n = now, 0
                 if not woke:
-                    next_frame += 1.0 / self.fps
+                    next_frame += 0.5 / self.strobe_hz if strobe_clock else 1.0 / self.fps
                     if now - next_frame > 0.25:   # fell far behind (sleep, debugger): resync
                         next_frame = now
         except KeyboardInterrupt:
@@ -266,6 +345,8 @@ class Engine:
         d["light"] = type(self.light).__name__ if self.light else None
         d["light_error"] = self.light_error
         d["idle"] = self.idle
+        d["strobe"] = self.strobing()
+        d["strobe_hz"] = self.strobe_hz
         d["stats"] = dict(self.stats)
         if self.light is not None and hasattr(self.light, "stats"):
             d["link"] = dict(self.light.stats)

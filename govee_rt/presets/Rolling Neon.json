@@ -1,0 +1,51 @@
+{
+ "name": "Rolling Neon",
+ "layers": [
+  {
+   "effect": "bass_pulse",
+   "params": {
+    "palette": [
+     "#ff00aa",
+     "#00e5ff",
+     "#8000ff",
+     "#39ff14",
+     "#ff5a00",
+     "#0050ff",
+     "#ffe600",
+     "#00ff9d"
+    ],
+    "threshold": 0.7,
+    "hold": 0.12,
+    "floor": 0.3,
+    "strong": 0.75,
+    "soft": 0.6,
+    "release": 0.0,
+    "kick_boost": true,
+    "color_every": 0,
+    "dark_below": 0.25,
+    "dark_after": 0.3,
+    "hit_min": 0.4,
+    "sustain": 0.0,
+    "trill": 0.0,
+    "trill_strobe": 0.0,
+    "run_gap": 0.3,
+    "drift": 0.0,
+    "spread": 0.0
+   },
+   "mod": {},
+   "blend": "normal",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  }
+ ],
+ "ble_mode": "roll_flash",
+ "master": {
+  "brightness": 1.0,
+  "gamma": 1.0,
+  "mod": {}
+ }
+}
