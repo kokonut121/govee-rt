@@ -4,21 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "govee-rt"
-version = "0.1.0"
-description = "Real-time per-segment control of Govee strips over Wi-Fi or Bluetooth, with music-reactive effects"
+dynamic = ["version"]
+description = "Make Govee RGBIC light strips dance to whatever your computer plays, over Bluetooth or Wi-Fi"
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.9"
-dependencies = ["numpy>=1.24"]
+keywords = ["govee", "led", "rgbic", "music", "audio-reactive", "bluetooth", "light-strip"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Home Automation",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+dependencies = ["numpy>=1.24", "sounddevice>=0.4.6", "bleak>=0.22"]
 
 [project.optional-dependencies]
-audio = ["sounddevice>=0.4.6"]
-ble = ["bleak>=0.22"]
 dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/kokonut121/govee-rt"
+Issues = "https://github.com/kokonut121/govee-rt/issues"
 
 [project.scripts]
 govee-rt = "govee_rt.cli:main"
 
 [tool.setuptools]
 packages = ["govee_rt"]
+
+[tool.setuptools.dynamic]
+version = {attr = "govee_rt.__version__"}
 
 [tool.setuptools.package-data]
 govee_rt = ["web/*", "presets/*.json"]

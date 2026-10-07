@@ -123,3 +123,152 @@ def output_rate_for(input_name):
     if dev not in _get_array(out.value, ACTIVE_SUBDEVICES, ctypes.c_uint32):
         return dev, None
     return dev, rate(out.value)
+
+
+# --------------------------------------------------------------------------- routing setup
+# What a new user otherwise does by hand in Audio MIDI Setup: a Multi-Output Device with the
+# speakers (clock) and BlackHole (drift-corrected), set as the system output, so whatever plays
+# is heard and captured at once. Only ever run when the user asks for it (`govee-rt audio-setup`
+# or yes at the first-run prompt).
+
+DEVICE_UID = _fourcc("uid ")
+MULTI_OUTPUT_NAME = "Govee RT Output"
+MULTI_OUTPUT_UID = "com.govee-rt.multi-output"
+_UTF8 = 0x08000100
+
+if _cf is not None:
+    _cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+    _cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    _cf.CFNumberCreate.restype = ctypes.c_void_p
+    _cf.CFNumberCreate.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.c_void_p]
+    _cf.CFArrayCreate.restype = ctypes.c_void_p
+    _cf.CFArrayCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long, ctypes.c_void_p]
+    _cf.CFDictionaryCreate.restype = ctypes.c_void_p
+    _cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long,
+                                       ctypes.c_void_p, ctypes.c_void_p]
+if _ca is not None:
+    _ca.AudioHardwareCreateAggregateDevice.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    _ca.AudioHardwareDestroyAggregateDevice.argtypes = [ctypes.c_uint32]
+
+
+def uid(dev):
+    ref = _get(dev, DEVICE_UID, ctypes.c_void_p)
+    if ref is None or not ref.value:
+        return None
+    buf = ctypes.create_string_buffer(512)
+    ok = _cf.CFStringGetCString(ref.value, buf, 512, _UTF8)
+    _cf.CFRelease(ref.value)
+    return buf.value.decode() if ok else None
+
+
+def default_output():
+    v = _get(SYSTEM, DEFAULT_OUTPUT, ctypes.c_uint32)
+    return v.value if v else None
+
+
+def name(dev):
+    return _name(dev)
+
+
+def subdevices(dev):
+    return _get_array(dev, ACTIVE_SUBDEVICES, ctypes.c_uint32)
+
+
+def _cf_value(v, owned):
+    """Python int/str/list/dict -> CF object; every created ref is appended to `owned`."""
+    if isinstance(v, int):
+        n = ctypes.c_int32(v)
+        ref = _cf.CFNumberCreate(None, 3, ctypes.byref(n))           # kCFNumberSInt32Type
+    elif isinstance(v, str):
+        ref = _cf.CFStringCreateWithCString(None, v.encode(), _UTF8)
+    elif isinstance(v, list):
+        items = (ctypes.c_void_p * len(v))(*[_cf_value(x, owned) for x in v])
+        cb = ctypes.addressof(ctypes.c_char.in_dll(_cf, "kCFTypeArrayCallBacks"))
+        ref = _cf.CFArrayCreate(None, items, len(v), cb)
+    elif isinstance(v, dict):
+        keys = (ctypes.c_void_p * len(v))(*[_cf_value(k, owned) for k in v])
+        vals = (ctypes.c_void_p * len(v))(*[_cf_value(x, owned) for x in v.values()])
+        kcb = ctypes.addressof(ctypes.c_char.in_dll(_cf, "kCFTypeDictionaryKeyCallBacks"))
+        vcb = ctypes.addressof(ctypes.c_char.in_dll(_cf, "kCFTypeDictionaryValueCallBacks"))
+        ref = _cf.CFDictionaryCreate(None, keys, vals, len(v), kcb, vcb)
+    else:
+        raise TypeError(type(v))
+    owned.append(ref)
+    return ref
+
+
+def create_multi_output(main_dev, capture_dev, label=MULTI_OUTPUT_NAME, dev_uid=MULTI_OUTPUT_UID,
+                        private=False):
+    """Make a Multi-Output Device (stacked aggregate) playing to `main_dev` (its clock) and
+    `capture_dev` (drift-corrected). A private one is visible only to this process and goes
+    away with it. Returns the new device id, or None."""
+    if _ca is None:
+        return None
+    main_uid, cap_uid = uid(main_dev), uid(capture_dev)
+    if not (main_uid and cap_uid):
+        return None
+    owned = []
+    desc = _cf_value({"uid": dev_uid, "name": label, "stacked": 1, "private": int(private),
+                      "master": main_uid, "clock": main_uid,
+                      "subdevices": [{"uid": main_uid, "drift": 0}, {"uid": cap_uid, "drift": 1}]},
+                     owned)
+    out = ctypes.c_uint32(0)
+    err = _ca.AudioHardwareCreateAggregateDevice(desc, ctypes.byref(out))
+    for ref in owned:
+        _cf.CFRelease(ref)
+    return out.value if err == 0 and out.value else None
+
+
+def destroy(dev):
+    return _ca is not None and _ca.AudioHardwareDestroyAggregateDevice(dev) == 0
+
+
+def set_default_output(dev):
+    if _ca is None or dev is None:
+        return False
+    a = _Addr(DEFAULT_OUTPUT, GLOBAL, 0)
+    v = ctypes.c_uint32(dev)
+    return _ca.AudioObjectSetPropertyData(SYSTEM, ctypes.byref(a), 0, None, ctypes.sizeof(v), ctypes.byref(v)) == 0
+
+
+def routing_status(capture="BlackHole"):
+    """(state, output name): 'unsupported' off macOS, 'missing' with no capture driver,
+    'routed' when the system output already plays into it, else 'unrouted'."""
+    if _ca is None:
+        return "unsupported", None
+    cap = find_device(capture)
+    if cap is None:
+        return "missing", None
+    out = default_output()
+    label = name(out) if out is not None else None
+    if out is not None and (out == cap or cap in subdevices(out)):
+        return "routed", label
+    return "unrouted", label
+
+
+def route_to_capture(capture="BlackHole"):
+    """Make the system output play to the current speakers and the capture device at once.
+    Reuses our Multi-Output Device when it already wraps these speakers. Returns (ok, message)."""
+    state, label = routing_status(capture)
+    if state == "routed":
+        return True, f"the system output '{label}' already feeds {capture}"
+    if state == "missing":
+        return False, f"{capture} is not installed"
+    if state == "unsupported":
+        return False, "automatic audio routing is macOS only"
+    cap, out = find_device(capture), default_output()
+    for dev in _get_array(SYSTEM, DEVICES, ctypes.c_uint32):
+        if uid(dev) == MULTI_OUTPUT_UID:
+            if out in subdevices(dev) and set_default_output(dev):
+                return True, f"system output set to '{MULTI_OUTPUT_NAME}'"
+            destroy(dev)                      # built around other speakers: rebuild it
+            break
+    dev = create_multi_output(out, cap)
+    if dev is None:
+        return False, "CoreAudio refused to create the Multi-Output Device"
+    if not set_default_output(dev):
+        destroy(dev)
+        return False, f"could not select '{MULTI_OUTPUT_NAME}' as the system output"
+    return True, (f"system output is now '{MULTI_OUTPUT_NAME}' ({label} + {name(cap)}). To undo, "
+                  f"pick {label} in the menu bar sound menu. Volume keys don't work on a "
+                  f"Multi-Output Device; set the volume on the speaker or in the app.")

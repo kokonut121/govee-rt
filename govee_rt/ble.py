@@ -336,6 +336,7 @@ class GoveeBle:
             await self.client.start_notify(BLE_NOTIFY, self._on_notify)
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
+        self._closing = False
         self._sender_task = asyncio.get_running_loop().create_task(self._sender())
 
     def _on_notify(self, _char, data):
@@ -448,7 +449,7 @@ class GoveeBle:
     async def _sender(self):
         last_tx = time.monotonic()
         try:
-            while True:
+            while not self._closing:     # wait_for on Python < 3.12 can swallow a cancel()
                 try:
                     await asyncio.wait_for(self._wake.wait(), 1.0)
                 except asyncio.TimeoutError:
@@ -681,6 +682,7 @@ class GoveeBle:
 
     def close(self):
         async def go():
+            self._closing = True
             self._sender_task.cancel()
             try:
                 await self._sender_task

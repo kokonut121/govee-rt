@@ -85,7 +85,7 @@ class Devices:
 
 def describe(p):
     if not p:
-        return "no device saved yet; run: python -m govee_rt connect --ble"
+        return "no device saved yet; run: govee-rt (or govee-rt connect --ble)"
     where = p.get("address") if p.get("transport") == "ble" else p.get("ip")
     lines = [f"{p.get('sku') or 'unknown model'} over {p.get('transport', '?').upper()} ({where})",
              f"  name        {p.get('name')}",

@@ -16,6 +16,7 @@ mode that Govee Desktop + Razer Chroma use.  Same framing OpenRGB uses:
 Prereq: in the Govee app, open the strip -> settings -> turn on "LAN Control".
 
 Usage
+    govee-rt                                              # find the light, set up audio, open the studio
     python -m govee_rt scan                               # find lights, print IP + SKU
     python -m govee_rt solid  --ip IP --rgb 255 40 0      # sanity check (official LAN cmd)
     python -m govee_rt probe  --ip IP                     # find how many segments it accepts
@@ -24,8 +25,10 @@ Usage
     python -m govee_rt audio  --ip IP --segments 15 --device "BlackHole 2ch" --mode spectrum
     python -m govee_rt audio  --ip IP --segments 15 --wav song.wav --preview   # test from a file
 
-Deps: numpy; sounddevice only for live audio (pip install numpy sounddevice).
+Deps: numpy, sounddevice (live audio), bleak (Bluetooth).
 """
+
+__version__ = "0.2.0"
 
 from .audio import Analyzer, live_blocks, wav_blocks
 from .ble import (BLE_ENC_MARKER, BLE_MAX_SEGMENTS, BLE_NOTIFY, BLE_WRITE, GoveeBle, ble_brightness,

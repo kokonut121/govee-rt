@@ -331,8 +331,19 @@ strip and Mac on an iPhone hotspot (Maximize Compatibility) before buying anythi
 - DSP stays numpy-only unless a feature truly needs more. No librosa/torch for a 15-band FFT.
 - Package layout: `protocol.py` (LAN), `ble.py`, `audio.py` (analysis + sources), `effects.py`
   (effects, palettes, scenes, renderer), `engine.py` (real-time loop), `studio.py` + `web/`
-  (browser UI, stdlib HTTP, 127.0.0.1 only), `visuals.py` (legacy `audio` modes), `cli.py`.
-  Run as `python -m govee_rt`. Built-in presets live in `govee_rt/presets/`, user presets in
+  (browser UI, stdlib HTTP, 127.0.0.1 only), `visuals.py` (legacy `audio` modes), `cli.py`,
+  `quickstart.py` (first-run wizard, loopback detection, `doctor`), `macaudio.py` (CoreAudio:
+  rate sync, Multi-Output creation). Run as `govee-rt` or `python -m govee_rt`.
+- Distribution (2026-10-07): `install.sh` / `install.ps1` install uv, then `uv tool install`
+  from the git repo (switch `SOURCE` to `govee-rt` once on PyPI); `release.yml` publishes on a
+  `v*` tag via PyPI trusted publishing (pending publisher not set up yet). Version lives in
+  `govee_rt/__init__.py`. Bare `govee-rt` = `start`: saved light, else LAN scan, else BLE auto;
+  loopback auto-pick; offers BlackHole install and the "Govee RT Output" Multi-Output Device
+  (`macaudio.route_to_capture`, only on the user's yes); studio reopens the last look
+  (`~/.govee-rt/last_scene.json`). Python 3.9 is supported and in CI: watch for 3.10+ syntax
+  and asyncio differences (wait_for swallowing cancel before 3.12).
+- Never call `route_to_capture` / `set_default_output` from tests or agent sessions: it changes
+  the owner's system output. Test CoreAudio code with `create_multi_output(private=True)`. Built-in presets live in `govee_rt/presets/`, user presets in
   `~/.govee-rt/presets/`.
 - New effects: subclass `Effect` in `effects.py` with `@register`; declare params with the
   `F/COLOR/PAL/BOOL/CHOICE/SEGMENTS` helpers so the studio builds the editor automatically.
@@ -359,7 +370,7 @@ strip and Mac on an iPhone hotspot (Maximize Compatibility) before buying anythi
 - [ ] Hardware bring-up per the runbook; fill in the device record.
 - [x] Remembered device profile (`connect`, `~/.govee-rt/devices.json`): transport, address/IP,
       SKU, firmware, measured segment count. Commands need no flags after the first connect.
-- [ ] Remember the audio device and last preset too.
+- [x] Remember the last look (`last_scene.json`); audio device is auto-detected instead.
 - [ ] Windows loopback via `pyaudiowpatch` behind the same `live_blocks()` interface.
 - [ ] Latency measurement: play a click track, film strip + speaker at 120/240 fps, or use
       a photodiode on the strip into the audio input; target < 60 ms audio-to-light.
@@ -376,7 +387,10 @@ strip and Mac on an iPhone hotspot (Maximize Compatibility) before buying anythi
 - [ ] Multiple strips: one audio analysis, N `GoveeLan` targets, optional per-device offset.
 - [ ] Idle behavior: after 10 s of silence fall back to a slow ambient animation; disable
       real-time mode after a configurable timeout so the app's scenes come back.
-- [ ] Package as a small menu-bar/tray app or a `govee-rt` console script (pyproject exists).
+- [x] `govee-rt` console script, one-line installers, CI, PyPI release workflow.
+- [ ] Publish: make the repo public (scrub personal details from CLAUDE.md/docs first), set up
+      the PyPI pending publisher, tag v0.2.0.
+- [ ] Double-clickable macOS app (menu bar), so non-terminal users can run it.
 - [x] BLE transport via `bleak` with the same `rt_frame()` interface (`--ble`); needs hardware
       confirmation per the Bluetooth runbook.
 - [ ] Govee encrypted BLE (v1 AES-ECB+RC4, v2 AES-GCM) if this strip's 2b12 marker says so.

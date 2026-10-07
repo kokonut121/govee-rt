@@ -1,22 +1,40 @@
-"""Command line interface: python -m govee_rt <command> ..."""
+"""Command line interface: govee-rt [command] ...  (or python -m govee_rt)"""
 
 import argparse
 import asyncio
 import json
+import os
+import signal
 import sys
 import threading
 import time
 import webbrowser
 
-from . import __doc__ as PACKAGE_DOC
+from . import __version__
 from .audio import Analyzer, live_blocks, wav_blocks
 from .ble import BLE_MAX_SEGMENTS, STREAM_FPS, GoveeBle, ble_scan
 from .colors import hsv
-from .device import Devices, choose_segments, describe, sku_from_name
-from .effects import default_scene
+from .device import DEVICES_FILE, Devices, choose_segments, describe, sku_from_name
+from .effects import default_scene, normalize_scene
 from .engine import Engine
 from .protocol import GoveeLan, scan
+from .quickstart import bluetooth_hint, debug, doctor, find_loopback, setup_audio
 from .visuals import Visualizer, preview_line
+
+LAST_SCENE = os.path.join(os.path.dirname(DEVICES_FILE), "last_scene.json")
+USAGE = """\
+Music-reactive control for Govee RGBIC light strips.
+
+Just run `govee-rt`: it finds your light (Wi-Fi, then Bluetooth), sets up audio capture,
+and opens the studio in your browser. Everything after that happens in the browser.
+
+Other commands, for when you want them:
+  govee-rt doctor          what's set up and what's missing
+  govee-rt audio-setup     route your computer's sound to the lights (macOS: BlackHole)
+  govee-rt connect         re-detect the light (--segments N to fix the count)
+  govee-rt play --preset "Bass Pulse"    run a look without the browser
+  govee-rt <command> -h    options for any command
+"""
 
 
 # --------------------------------------------------------------------------- commands
@@ -269,6 +287,8 @@ def light_factory(a, segments):
 
 
 def attach_audio(engine, a):
+    if a.device is None and not a.wav and not getattr(a, "demo", False):
+        a.device = find_loopback()        # None: no loopback input, run the demo beat
     if a.wav:
         def looped():
             while True:
@@ -286,7 +306,20 @@ def load_scene(a, presets):
             return json.load(f)
     if a.preset:
         return presets.load(a.preset)
-    return default_scene()
+    try:                                  # the look the studio was showing when it last closed
+        with open(LAST_SCENE) as f:
+            return normalize_scene(json.load(f))
+    except (OSError, ValueError, KeyError, TypeError):
+        return default_scene()
+
+
+def save_last_scene(scene):
+    try:
+        os.makedirs(os.path.dirname(LAST_SCENE), exist_ok=True)
+        with open(LAST_SCENE, "w") as f:
+            json.dump(scene, f, indent=1)
+    except OSError:
+        pass
 
 
 def make_engine(a, scene):
@@ -302,7 +335,13 @@ def cmd_studio(a):
     presets = Presets()
     engine = make_engine(a, load_scene(a, presets))
     attach_audio(engine, a)
-    httpd = serve(engine, presets, a.port, device=getattr(a, "profile", None))
+    for port in range(a.port, a.port + 20):   # another studio may hold the default port
+        try:
+            httpd = serve(engine, presets, port, device=getattr(a, "profile", None))
+            break
+        except OSError:
+            if port == a.port + 19:
+                raise
     url = f"http://127.0.0.1:{httpd.server_address[1]}/"
     print(f"studio at {url}  ({engine.source}; Ctrl-C to stop)", flush=True)
     if not a.no_open:
@@ -316,7 +355,45 @@ def cmd_studio(a):
     finally:
         engine.stop()
         httpd.server_close()
+        save_last_scene(engine.get_scene())
         print(f"\nstopped. {dict(engine.stats)}")
+
+
+def cmd_start(a):
+    """No command given: find the light (saved, then Wi-Fi, then Bluetooth), make sure the
+    computer's audio reaches a loopback input, open the studio."""
+    print(f"govee-rt {__version__}: music-reactive Govee lights\n", flush=True)
+    if not (a.ip or a.ble or a.no_send):
+        print("looking for your light on Wi-Fi ...", flush=True)
+        try:
+            found = scan(timeout=2.0)
+        except OSError:
+            found = {}
+        a.segments = a.segments_given     # resolve_device filled in a preview-only count
+        if found:
+            a.ip, info = next(iter(found.items()))
+            print(f"  found {info.get('sku') or 'a Govee light'} at {a.ip}", flush=True)
+        else:
+            a.ble = "auto"
+            print("  none on Wi-Fi; searching Bluetooth (close the Govee app on your phone first) ...",
+                  flush=True)
+    elif a.profile:
+        print(describe(a.profile).splitlines()[0], flush=True)
+    if a.wav is None and a.device is None and not a.demo:
+        print("checking audio ...", flush=True)
+        a.device = setup_audio(interactive=True)
+        print(f"  listening to {a.device}" if a.device else "  no loopback input: running a demo beat",
+              flush=True)
+    cmd_studio(a)
+
+
+def cmd_doctor(a):
+    doctor(describe(Devices().default()), __version__)
+
+
+def cmd_audio_setup(a):
+    name = setup_audio(interactive=True)
+    print(f"audio input for the lights: {name}" if name else "audio not set up yet")
 
 
 def cmd_play(a):
@@ -399,9 +476,18 @@ def cmd_audio(a):
             g.close()
 
 
-def main():
-    p = argparse.ArgumentParser(prog="python -m govee_rt", description=PACKAGE_DOC, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = p.add_subparsers(dest="cmd", required=True)
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help", "--version")):
+        argv.insert(0, "start")          # bare `govee-rt` (or `govee-rt --no-send`) is the wizard
+    p = argparse.ArgumentParser(prog="govee-rt", description=USAGE,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version", action="version", version=f"govee-rt {__version__}")
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="command")
 
     s = sub.add_parser("scan")
     s.add_argument("--timeout", type=float, default=3.0)
@@ -472,14 +558,29 @@ def main():
         sp.add_argument("--samplerate", type=int)
         sp.add_argument("--block", type=int, default=1024)
 
+    def studio_args(sp):
+        engine_args(sp)
+        sp.add_argument("--demo", action="store_true", help="synthetic beat even if a loopback input exists")
+        sp.add_argument("--port", type=int, default=8765)
+        sp.add_argument("--no-open", action="store_true", help="don't open a browser")
+
+    s = sub.add_parser("start", help="find the light, set up audio, open the studio (the default)")
+    studio_args(s)
+    s.set_defaults(fn=cmd_start)
+
     s = sub.add_parser("studio", help="browser control panel with live preview")
-    engine_args(s)
-    s.add_argument("--port", type=int, default=8765)
-    s.add_argument("--no-open", action="store_true", help="don't open a browser")
+    studio_args(s)
     s.set_defaults(fn=cmd_studio)
+
+    s = sub.add_parser("doctor", help="check what's set up and what's missing")
+    s.set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser("audio-setup", help="route the computer's sound to a loopback input")
+    s.set_defaults(fn=cmd_audio_setup)
 
     s = sub.add_parser("play", help="run a preset headless")
     engine_args(s)
+    s.add_argument("--demo", action="store_true", help="synthetic beat even if a loopback input exists")
     s.set_defaults(fn=cmd_play)
 
     s = sub.add_parser("devices")
@@ -501,12 +602,27 @@ def main():
     s.add_argument("--preview", action="store_true", help="ASCII preview of the strip in the terminal")
     s.set_defaults(fn=cmd_audio)
 
-    a = p.parse_args()
+    a = p.parse_args(argv)
+    for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):   # closed terminal: clean exit
+        if sig is not None:
+            signal.signal(sig, _interrupt)
+    a.segments_given = getattr(a, "segments", None)
     if hasattr(a, "ble"):
         if a.ip and a.ble:
             p.error("use --ip or --ble, not both")
         resolve_device(a, p)
-    a.fn(a)
+    try:
+        a.fn(a)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        if debug():
+            raise
+        hint = bluetooth_hint(e)
+        print(f"\nerror: {e}" + (f"\n  fix: {hint}" if hint else "") +
+              "\n  (set GOVEE_RT_DEBUG=1 for the full traceback; govee-rt doctor checks the setup)",
+              file=sys.stderr)
+        sys.exit(1)
 
 
 def resolve_device(a, p):
@@ -522,8 +638,8 @@ def resolve_device(a, p):
                 a.ble = default["address"]
             else:
                 a.ip = default["ip"]
-        elif a.cmd != "studio":
-            p.error(f"{a.cmd} needs --ble or --ip (or run: python -m govee_rt connect --ble)")
+        elif a.cmd not in ("studio", "start"):
+            p.error(f"{a.cmd} needs --ble or --ip (or run govee-rt to find your light)")
     if a.ble == "auto" and default and default["transport"] == "ble":
         a.ble = default["address"]
     if a.ble:
