@@ -1,0 +1,45 @@
+{
+ "name": "Paint",
+ "layers": [
+  {
+   "effect": "paint",
+   "params": {
+    "colors": [
+     "#ff2a00",
+     "#000000",
+     "#ffb000",
+     "#000000",
+     "#ff2a00",
+     "#000000",
+     "#ffb000",
+     "#000000",
+     "#ff2a00",
+     "#000000",
+     "#ffb000",
+     "#000000",
+     "#ff2a00",
+     "#000000",
+     "#ffb000"
+    ]
+   },
+   "mod": {},
+   "blend": "normal",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  }
+ ],
+ "master": {
+  "brightness": 0.45,
+  "gamma": 1.8,
+  "mod": {
+   "brightness": {
+    "src": "beat",
+    "amt": 0.55
+   }
+  }
+ }
+}

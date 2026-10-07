@@ -12,7 +12,10 @@ import wave
 import numpy as np
 
 
-def synth(bpm=128, seconds=12.0, sr=48000, seed=0):
+def synth(bpm=128, seconds=12.0, sr=48000, seed=0, kick_gap=None, kick_gains=(1.0,)):
+    """kick_gap=(t0, t1) drops the kicks that start in that window (a build-up); the hats and
+    the pad keep playing. kick_gains is cycled over the kicks (e.g. (1.0, 0.4) alternates loud
+    and soft). Returns (sr, x, kick times actually played)."""
     rng = np.random.default_rng(seed)
     t = np.arange(int(sr * seconds)) / sr
     beat = 60.0 / bpm
@@ -20,11 +23,12 @@ def synth(bpm=128, seconds=12.0, sr=48000, seed=0):
     kicks = []
     for k in range(int(seconds / beat)):
         t0 = k * beat
-        kicks.append(t0)
-        idx = (t >= t0) & (t < t0 + 0.25)
-        tt = t[idx] - t0
-        f = 50 + 100 * np.exp(-tt * 25)
-        x[idx] += 0.9 * np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-tt * 8)
+        if not (kick_gap and kick_gap[0] <= t0 < kick_gap[1]):
+            kicks.append(t0)
+            idx = (t >= t0) & (t < t0 + 0.25)
+            tt = t[idx] - t0
+            f = 50 + 100 * np.exp(-tt * 25)
+            x[idx] += 0.9 * kick_gains[k % len(kick_gains)] * np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-tt * 8)
         if k % 2 == 1:
             idx = (t >= t0) & (t < t0 + 0.06)
             x[idx] += 0.25 * rng.standard_normal(idx.sum()) * np.exp(-(t[idx] - t0) * 60)

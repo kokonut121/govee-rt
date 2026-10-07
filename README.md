@@ -1,7 +1,8 @@
 # govee-rt
 
-Real-time, per-segment control of Govee Wi‑Fi RGBIC strips over the LAN, and an
-audio-reactive streamer that lights the strip from whatever your computer is playing.
+Real-time, per-segment control of Govee RGBIC strips over Wi‑Fi or Bluetooth, a layered
+effects engine that syncs to whatever your computer is playing, and a browser studio to
+design looks live.
 
 Built for a Govee Strip Light S (H612 family, 49.2 ft). It uses the undocumented real-time
 mode that Govee Desktop and Razer Chroma use (plain UDP, no cloud, no fades), which is what
@@ -14,20 +15,69 @@ devices that OpenRGB supports (H618x/H619x strips, H61A0 neon ropes, H6061/H6066
 pip install -r requirements.txt
 
 # 1. In the Govee app: strip → settings → LAN Control: on
-python govee_rt.py scan                               # prints IP and SKU
-python govee_rt.py solid --ip 192.168.1.50 --rgb 255 40 0   # sanity check
-python govee_rt.py probe --ip 192.168.1.50            # find the segment count by eye
-python govee_rt.py chase --ip 192.168.1.50 --segments 15
+python -m govee_rt scan                               # prints IP and SKU
+python -m govee_rt solid --ip 192.168.1.50 --rgb 255 40 0   # sanity check
+python -m govee_rt probe --ip 192.168.1.50            # find the segment count by eye
+python -m govee_rt chase --ip 192.168.1.50 --segments 15
 
 # 2. Route system audio to a loopback device (see below), then:
-python govee_rt.py devices
-python govee_rt.py audio --ip 192.168.1.50 --segments 15 --device "BlackHole 2ch" --mode spectrum --preview
+python -m govee_rt devices
+python -m govee_rt audio --ip 192.168.1.50 --segments 15 --device "BlackHole 2ch" --mode spectrum --preview
 ```
+
+### Over Bluetooth instead (strip not on Wi‑Fi)
+
+Close the Govee app on your phone first; the strip takes one Bluetooth connection at a time.
+
+```bash
+python -m govee_rt connect --ble     # find the strip, read its model/firmware, measure its segments
+python -m govee_rt studio            # from now on no flags needed: it uses the saved strip
+python -m govee_rt info              # what was detected
+```
+
+`connect` reads the model from the strip's Bluetooth name, asks for firmware and hardware
+versions, and measures the segment count: it paints each addressable segment a unique test
+color and reads the colors back, so slots past the real end show up as missing. It then shows
+one rainbow band per segment so you can check the count by eye. The result is saved to
+`~/.govee-rt/devices.json` and every command adapts to it. If the count is ever wrong,
+`probe --ble` lights segments one at a time and `connect --segments N` fixes it for good.
+Running any command with `--ble` against a strip that isn't saved yet does the same detection
+automatically.
+
+On macOS your terminal app needs Bluetooth permission (Privacy & Security → Bluetooth).
+BLE is slower than Wi‑Fi: each frame costs one 20-byte write per distinct color, and frames
+the radio can't keep up with are dropped rather than queued, so lights never lag the music.
 
 `--preview` draws the strip as ASCII in the terminal so you can see what's being sent.
 `--wav song.wav` drives it from a file instead of live audio, handy before loopback is set up.
 
-## Modes
+## Studio: design your own looks
+
+```bash
+python -m govee_rt studio --ble --device "BlackHole 2ch"     # or --ip IP, or --no-send to just preview
+```
+
+Opens a control panel in your browser with a live preview of the strip. A look is a stack of
+**layers**; each layer runs one effect on a range of segments and blends onto the layers below.
+
+- **Effects**: solid, paint (set every segment by hand), gradient scroll, rainbow, spectrum bars,
+  level meter, beat pulse, comets, sparkle, fire, sine wave, ripples, strobe, breathe, plasma.
+- **Per segment**: each layer has a segment range (click the mini strip), reverse, and mirror
+  from center, so the halves or thirds of the strip can do different things.
+- **Music sync on any knob**: press ♪ next to any slider (including a layer's opacity and the
+  master brightness) and pick what it follows: bass, mid, high, energy, beat, or an LFO.
+  Example: comet speed follows energy, sparkle opacity follows high, master follows beat.
+- **Blend modes**: normal, add, screen, max, multiply.
+- **Presets**: ten built-ins to start from; save your own (stored in `~/.govee-rt/presets/`).
+
+With no `--device` it runs a synthetic 124 BPM beat so you can design without music playing.
+`python -m govee_rt play --preset "Comet Rush" --ble --device "BlackHole 2ch"` runs a saved look
+without the UI.
+
+The strip is controlled per **segment**, not per LED: that's the finest unit Govee's firmware
+exposes to any controller. The segment count is found with `probe`.
+
+## Modes (the original `audio` command)
 
 | mode | what it does |
 |------|--------------|
@@ -46,7 +96,7 @@ The script reads an input device. To capture what's playing, that input has to b
 - **macOS**: `brew install blackhole-2ch`; in Audio MIDI Setup create a Multi-Output Device
   containing your speakers and BlackHole 2ch, set it as the system output, then
   `--device "BlackHole 2ch"`.
-- **Linux**: pick the `Monitor of …` source that `python govee_rt.py devices` lists.
+- **Linux**: pick the `Monitor of …` source that `python -m govee_rt devices` lists.
 - **Windows**: `sounddevice` can't open WASAPI loopback; use VB-Cable, or see the roadmap
   item for `pyaudiowpatch` in CLAUDE.md.
 

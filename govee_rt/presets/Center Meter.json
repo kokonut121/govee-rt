@@ -1,0 +1,45 @@
+{
+ "name": "Center Meter",
+ "layers": [
+  {
+   "effect": "breathe",
+   "params": {
+    "palette": "ocean",
+    "period": 6.0,
+    "floor": 0.1,
+    "drift": 0.05
+   },
+   "mod": {},
+   "blend": "normal",
+   "opacity": 0.15,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  },
+  {
+   "effect": "meter",
+   "params": {
+    "source": "bass",
+    "palette": "meter",
+    "gain": 1.0,
+    "peak": true,
+    "background": 0.0
+   },
+   "mod": {},
+   "blend": "normal",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": true,
+   "enabled": true
+  }
+ ],
+ "master": {
+  "brightness": 1.0,
+  "gamma": 1.8,
+  "mod": {}
+ }
+}

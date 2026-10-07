@@ -1,0 +1,72 @@
+{
+ "name": "Comet Rush",
+ "layers": [
+  {
+   "effect": "plasma",
+   "params": {
+    "palette": "ocean",
+    "scale": 1.0,
+    "speed": 0.2
+   },
+   "mod": {
+    "opacity": {
+     "src": "energy",
+     "amt": 0.4
+    }
+   },
+   "blend": "normal",
+   "opacity": 0.2,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  },
+  {
+   "effect": "comet",
+   "params": {
+    "palette": "ice",
+    "speed": 9.0,
+    "tail": 0.3,
+    "count": 2.0,
+    "bounce": false,
+    "beat_kick": 3.0
+   },
+   "mod": {
+    "speed": {
+     "src": "energy",
+     "amt": 0.25
+    }
+   },
+   "blend": "screen",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  },
+  {
+   "effect": "sparkle",
+   "params": {
+    "palette": "white",
+    "rate": 3.0,
+    "decay": 0.25,
+    "burst": 4.0
+   },
+   "mod": {},
+   "blend": "add",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  }
+ ],
+ "master": {
+  "brightness": 1.0,
+  "gamma": 1.8,
+  "mod": {}
+ }
+}

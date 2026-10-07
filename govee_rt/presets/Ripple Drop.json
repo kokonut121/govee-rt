@@ -1,0 +1,45 @@
+{
+ "name": "Ripple Drop",
+ "layers": [
+  {
+   "effect": "plasma",
+   "params": {
+    "palette": "synthwave",
+    "scale": 0.8,
+    "speed": 0.2
+   },
+   "mod": {},
+   "blend": "normal",
+   "opacity": 0.3,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  },
+  {
+   "effect": "ripple",
+   "params": {
+    "palette": "synthwave",
+    "speed": 14.0,
+    "width": 1.2,
+    "decay": 0.7,
+    "origin": "random",
+    "rate": 0.0
+   },
+   "mod": {},
+   "blend": "screen",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  }
+ ],
+ "master": {
+  "brightness": 1.0,
+  "gamma": 1.8,
+  "mod": {}
+ }
+}

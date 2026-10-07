@@ -1,0 +1,32 @@
+{
+ "name": "Bass Fire",
+ "layers": [
+  {
+   "effect": "fire",
+   "params": {
+    "palette": "fire",
+    "cooling": 0.6,
+    "sparking": 0.3,
+    "from_both_ends": true
+   },
+   "mod": {
+    "sparking": {
+     "src": "bass",
+     "amt": 0.7
+    }
+   },
+   "blend": "normal",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  }
+ ],
+ "master": {
+  "brightness": 1.0,
+  "gamma": 1.8,
+  "mod": {}
+ }
+}
