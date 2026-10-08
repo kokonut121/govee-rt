@@ -94,28 +94,101 @@ Behavior notes gathered from the projects above:
 * ~40 fps is fine; one implementation held 60 Hz on an H618A. Back-to-back datagrams closer
   than ~15 ms can get silently dropped, so pace sends.
 * N is capped at 255 by the one-byte count. What N the strip actually honors (its segment
-  count) is model-specific and unknown for this unit; `govee_rt.py probe` finds it by eye.
+  count) is model-specific and unknown for this unit; `python -m govee_rt probe` finds it by eye.
   What happens for N ≠ segment count (ignored? resampled?) is also unknown; the probe
   will show it.
 * Brightness is still governed by the official `brightness` command; real-time frames are
   scaled by it. Set it to 100 once and do dimming in the frame data.
 
-## Bluetooth fallback
+## Bluetooth (BLE)
 
-Only needed if the Wi‑Fi real-time path turns out not to work on this SKU. It is slower
-(write-without-response at the BLE connection interval, realistically 10–20 fps) and the
-per-segment packet formats vary by model, so prefer UDP.
+Implemented as `GoveeBle` (`--ble` on every command). Used when the strip isn't on Wi‑Fi,
+or as a fallback if razer mode fails. Slower than UDP: every packet is a write-without-response
+paced by the BLE connection interval.
 
-Known from govee_btled, govee-led-wez and generalzero's notes:
+Known from govee_btled, govee-led-wez, generalzero's notes and ha-govee-led-ble (MIT; H617A,
+15 segments, hardware-verified there):
 
 * GATT service `00010203-0405-0607-0809-0a0b0c0d1910`
-* write characteristic `00010203-0405-0607-0809-0a0b0c0d2b11`, notify `...2b10`
-* 20-byte packets. Byte 0 = `0x33` for commands, `0xAA` for keep-alive/status queries.
-  Byte 1 = command (`01` power, `04` brightness, `05` color). Last byte = XOR of the first 19.
-* Solid color on older strips: `33 05 02 rr gg bb ...`. RGBIC segment commands use other
-  sub-codes (`33 05 15 01 rr gg bb <segment bitmask>` on some models) and that's the part
-  you'd have to confirm by capture for this SKU.
-* Python: `bleak` can do all of this from macOS/Linux/Windows.
+* write characteristic `...2b11`, notify `...2b10`, encryption marker `...2b12` (newer models)
+* 20-byte packets. Byte 0 = `0x33` for commands, `0xAA` for queries. Last byte = XOR of the
+  first 19. The app sends `AA 01` (power query) every ~2 s as a keep-alive; we do too when idle.
+* `33 01 01|00` power, `33 04 <0..100>` brightness percent.
+* Per-segment static color (H617A family), one color per write onto a 16-bit segment mask:
+
+  ```
+  33 05 15 01  r g b  <kelvin u16 BE, 0 for RGB>  r g b  <mask u16 LE>  00…  xor
+  ```
+
+  bit 0 = segment 1; H617A's whole-strip mask is `0x7FFF`. `33 05 15 02 <pct> <mask>` is
+  per-segment brightness. A frame therefore costs one write per distinct color.
+  `ble_segment_packets()` groups equal colors into one mask, skips segments that didn't change,
+  and re-sends one segment per frame round robin so a dropped write heals.
+* Older, non-segmented strips use `33 05 02 r g b` (or `0D`/`0B` variants) for a solid color.
+* `--ble-mode razer` writes the LAN `BB …` frames straight to `2b11`. The H612D ignores them
+  (see below); kept for models that might not.
+
+Verified on the H612D (20 segments, 2026-10-06):
+
+* `0x15` static segment color works; the mask continues past 16 bits into byte 14 (bits 16-19
+  reached segments 17-20). The code treats bytes 12..18 as one little-endian mask (56 bits).
+* Every `33` command is ACKed with `33 <cmd> 00 …` on the notify characteristic. Static
+  segment writes take ~173 ms to ACK (link RTT ~86 ms on macOS), and writes sent while the
+  strip is busy are dropped, so `GoveeBle` waits for each ACK. That caps BLE animation at a
+  handful of writes per second: fine for still looks, too slow for beat-synced effects.
+* Segment readback `AA A5 <page>` returns four records (`brightness r g b`) per page on this
+  model (three plus a zero slot on the H617A) and an all-zero page past the end. Painting all
+  56 mask bits one test color and counting the records that hold it gives the segment count.
+* `AA 06` firmware text, `AA 07 03` hardware text; `AA 05 01` reports the color mode byte
+  (`15` segments, `02`/`0d` solid).
+* Razer `BB` frames over BLE are ignored (no ACK, no mode change, nothing visible).
+
+### Music modes over BLE (research, 2026-10-06; not yet tried on the H612D)
+
+Govee lists the Strip Light S as "Music Sync from phone and device microphone". Two paths:
+
+* **Device mic**: the strip listens with its own microphone and renders its built-in music
+  effects. Selected with `33 05 13 <mode> <sensitivity 0..99> …` (H6199 uses `33 05 0c`;
+  the old H6127 used `33 05 01 <mode>`). Mode ids from ha-govee-led-ble's APK analysis:
+  `03` rhythm, `04` spectrum, `05` energetic, `06` rolling, `30` bloom, `31` shiny,
+  `32` separation, `33` hopping, `34` piano keys, `35` fountain, `37` day and night.
+  Legacy modes (rhythm, spectrum, energetic, rolling) carry `style, has_fixed_colour, r g b`
+  after the sensitivity; newer ones take palettes and tails through an A3 upload
+  (`01 <lines> 41 <mode> <n_palette> rgb… <tail>`, see `music_body.ksy` there).
+* **Phone mic**: the app analyzes the phone's microphone itself and streams 7-byte frames
+  `a5 02 83 r g b sum`, where the last byte is the low 8 bits of the sum of the first six
+  (H617A and H6199 capture: `a5 02 83 56 00 00 80`). What the three payload bytes mean, and
+  whether `83` is "phone mic + mode 03 (rhythm)", is unknown. The owner reports that switching
+  the app to phone mic loses the device-mic animations (2026-10-06): the phone sends a color,
+  the strip shows it. So injecting this stream does not drive the built-in effects; it is
+  only interesting as a cheap whole-strip color channel driven by the computer's audio.
+  The built-in effects follow the strip's own microphone only, which the owner rejects
+  (poor sync, noise), so this project never uses device-mic modes.
+* Whole-strip commands are much cheaper than sketch uploads: the H612D ACKs brightness
+  (`33 04`) in ~116 ms against ~86 ms link RTT, and bartekpacia/govee drives other models at
+  20 updates/s with `33 05 0d r g b`. Beat pulses can ride on these while a sketch upload
+  (~3/s) holds the spatial pattern.
+
+To remove the guesswork, capture the Govee app in phone-mic mode: install Apple's
+"Bluetooth for iOS" logging profile, run phone-mic music for ~30 s, take a sysdiagnose, and
+read the ATT writes to `2b11` from its `.pklg`.
+
+### Encrypted BLE on newer Govee models
+
+Some 2024+ models (H66A0, H1A42 with AES-GCM "v2"; H61F5 with AES-ECB+RC4 "v1") reject
+plaintext. Detection: read `2b12`; byte 1 is the version, 0 = plaintext. The keys are
+app-global constants plus SKU and MAC, so it is implementable; see
+`custom_components/ha_govee_led_ble/govee_encryption/` in teh-hippo/ha-govee-led-ble.
+`GoveeBle` refuses to connect with a clear error if the marker says encrypted. H612x is not
+on anyone's encrypted list yet.
+
+### macOS permission
+
+CoreBluetooth needs a Bluetooth grant for the *responsible* app. From Terminal/iTerm that's
+the terminal app (System Settings → Privacy & Security → Bluetooth). A process started from a
+tool without an `Info.plist` usage string (for example the Claude Code agent) is killed with
+SIGABRT, exit 134. `tools/ble_run.sh` runs the command under `build/GoveeBLE.app`, a tiny
+launcher that declares Bluetooth usage, so the grant attaches to "GoveeBLE" instead.
 
 ## If you need to capture traffic
 
@@ -148,3 +221,6 @@ Prefer the UDP capture; it needs no hardware.
 * CSA Matter listing (H612E family): https://csa-iot.org/pt/csa_product/govee-strip-light-s-4/
 * BLE notes: https://notes.generalzero.org/Reverse%20Engineering/Signals/Bluetooth/Govee_lights.html
   and https://github.com/chvolkmann/govee_btled
+* H617A segment command, encryption marker and handshakes:
+  https://github.com/teh-hippo/ha-govee-led-ble (`light_commands.py`, `transport.py`,
+  `tools/ble/kaitai/command_write.ksy`, issue #257)

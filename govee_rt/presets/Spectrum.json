@@ -1,0 +1,27 @@
+{
+ "name": "Spectrum",
+ "layers": [
+  {
+   "effect": "spectrum",
+   "params": {
+    "palette": "rainbow",
+    "gain": 1.2,
+    "floor": 0.0,
+    "bass_flash": true
+   },
+   "mod": {},
+   "blend": "normal",
+   "opacity": 1.0,
+   "start": 0.0,
+   "end": 1.0,
+   "reverse": false,
+   "mirror": false,
+   "enabled": true
+  }
+ ],
+ "master": {
+  "brightness": 1.0,
+  "gamma": 1.8,
+  "mod": {}
+ }
+}

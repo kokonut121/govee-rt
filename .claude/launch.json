@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "studio-preview",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "govee_rt", "studio", "--no-send", "--no-open", "--port", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "studio-preview-alt",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "govee_rt", "studio", "--no-send", "--no-open", "--port", "8766", "--preset", "Neon Bass Desire"],
+      "port": 8766
+    }
+  ]
+}
