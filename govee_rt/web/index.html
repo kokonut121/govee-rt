@@ -158,15 +158,43 @@ button.strobe.on kbd { background: rgba(0, 0, 0, 0.1); color: rgba(0, 0, 0, 0.55
 .section-h h2 { font-size: 20px; line-height: 1.2; letter-spacing: -0.02em; font-weight: 700; }
 .save-row { display: flex; gap: 6px; align-items: center; }
 .save-row input { width: 190px; }
+.preset-group + .preset-group { margin-top: 10px; }
+.preset-group .eyebrow { margin: 0 0 8px 2px; }
+/* a rail scrolls sideways by trackpad, wheel, drag or the arrow buttons; edges fade only
+   where there is more to see */
+.rail { position: relative; --fl: 0px; --fr: 0px; }
+.rail.more-l { --fl: 44px; }
+.rail.more-r { --fr: 44px; }
 .presets {
-  position: relative; display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x proximity; padding: 4px 2px 14px;
-  margin: -4px -2px 0; scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
-  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  position: relative; display: flex; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain;
+  padding: 4px 2px 10px; margin: -4px -2px 0; scrollbar-width: none; cursor: grab;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 var(--fl), #000 calc(100% - var(--fr)), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 var(--fl), #000 calc(100% - var(--fr)), transparent);
 }
 .presets::-webkit-scrollbar { display: none; }
+.rail.dragging .presets { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.rail.dragging .preset { pointer-events: none; }
+.nudge {
+  position: absolute; top: 4px; z-index: 2; width: 40px; height: 40px; padding: 0; border-radius: 50%;
+  display: grid; place-items: center; color: var(--ink);
+  background: var(--glass-hi);
+  -webkit-backdrop-filter: blur(20px) saturate(170%); backdrop-filter: blur(20px) saturate(170%);
+  box-shadow: inset 0 1px 0 var(--edge), inset 0 0 0 1px var(--hair-2), 0 6px 18px rgba(0, 0, 0, 0.5);
+  opacity: 0; pointer-events: none; transform: scale(0.85);
+  transition: opacity 200ms ease, transform 400ms var(--spring), background 150ms ease;
+}
+.nudge.l { left: -6px; }
+.nudge.r { right: -6px; }
+.rail.more-l .nudge.l, .rail.more-r .nudge.r { opacity: 1; pointer-events: auto; transform: none; }
+.rail.more-l .nudge.l:active, .rail.more-r .nudge.r:active { transform: scale(0.92); }
+@media (hover: none) { .nudge { display: none; } }
+.rail-empty {
+  display: flex; align-items: center; height: 40px; padding: 0 16px; border-radius: 999px; flex: none;
+  color: var(--ink-3); font-size: 13px; box-shadow: inset 0 0 0 1px var(--hair-2); border: 0; background: none;
+  outline-offset: 2px;
+}
 .preset {
-  flex: none; scroll-snap-align: start; display: inline-flex; align-items: center; gap: 8px;
+  flex: none; display: inline-flex; align-items: center; gap: 8px;
   height: 40px; padding: 0 16px; border-radius: 999px; border: 0;
   font: 500 14px/1 var(--font); letter-spacing: -0.01em; color: var(--ink);
   background: var(--glass);
@@ -175,8 +203,6 @@ button.strobe.on kbd { background: rgba(0, 0, 0, 0.1); color: rgba(0, 0, 0, 0.55
 }
 .preset:hover { background: var(--glass-hi); }
 .preset.active { background: #fff; color: #000; box-shadow: 0 0 30px -4px rgba(var(--spill), 0.7); }
-.preset .tag { width: 5px; height: 5px; border-radius: 50%; background: var(--ink-3); }
-.preset.active .tag { background: rgba(0, 0, 0, 0.35); }
 .preset .del {
   display: grid; place-items: center; width: 20px; height: 20px; margin-right: -8px; border-radius: 50%;
   font-size: 11px; color: var(--ink-3);
@@ -450,7 +476,14 @@ input[type=color]::-moz-color-swatch { border: 0; border-radius: 50%; }
       <button class="primary" id="saveBtn">Save</button>
     </div>
   </div>
-  <div class="presets" id="presets"></div>
+  <div class="preset-group">
+    <div class="eyebrow" id="builtinLabel">Built-in</div>
+    <div class="rail" id="railBuiltin"><div class="presets" id="presetsBuiltin" aria-labelledby="builtinLabel"></div></div>
+  </div>
+  <div class="preset-group">
+    <div class="eyebrow" id="userLabel">Your presets</div>
+    <div class="rail" id="railUser"><div class="presets" id="presetsUser" aria-labelledby="userLabel"></div></div>
+  </div>
 </section>
 
 <main class="desk">
@@ -788,11 +821,9 @@ function renderMaster() {
 }
 
 /* ---------------------------------------------------------------- presets */
-function renderPresets(list) {
-  $("#presets").replaceChildren(...list.map((p) => {
-    const b = h("button", { class: "preset" + (p.name === ACTIVE_PRESET ? " active" : ""), "aria-pressed": String(p.name === ACTIVE_PRESET),
-      title: p.builtin ? "Built-in preset" : "Your preset" },
-      p.builtin ? h("span", { class: "tag", "aria-hidden": "true" }) : null, h("span", {}, p.name));
+function presetChip(p) {
+    const b = h("button", { class: "preset" + (p.name === ACTIVE_PRESET ? " active" : ""), "aria-pressed": String(p.name === ACTIVE_PRESET) },
+      h("span", {}, p.name));
     b.addEventListener("click", () => loadPreset(p.name));
     if (!p.builtin) {
       const del = h("span", { class: "del", title: "Delete preset", role: "button", "aria-label": `Delete ${p.name}` }, "✕");
@@ -804,11 +835,80 @@ function renderPresets(list) {
       b.append(del);
     }
     return b;
-  }));
-  // bring the active chip into view sideways only; scrollIntoView would also move the page
-  const box = $("#presets"), act = $(".preset.active", box);
-  if (act && (act.offsetLeft < box.scrollLeft || act.offsetLeft + act.offsetWidth > box.scrollLeft + box.clientWidth))
-    box.scrollLeft = act.offsetLeft - 24;
+}
+function renderPresets(list) {
+  const mine = list.filter((p) => !p.builtin);
+  $("#presetsBuiltin").replaceChildren(...list.filter((p) => p.builtin).map(presetChip));
+  $("#presetsUser").replaceChildren(...(mine.length ? mine.map(presetChip)
+    : [h("button", { class: "rail-empty", onclick: () => $("#saveName").focus() }, "Save a look and it shows up here")]));
+  for (const id of ["#railBuiltin", "#railUser"]) {
+    const rail = $(id), box = $(".presets", rail), act = $(".preset.active", box);
+    // bring the active chip into view sideways only; scrollIntoView would also move the page
+    if (act && (act.offsetLeft < box.scrollLeft || act.offsetLeft + act.offsetWidth > box.scrollLeft + box.clientWidth))
+      box.scrollLeft = act.offsetLeft - 48;
+    rail.update();
+  }
+}
+
+/* Sideways rails. Trackpads and touch scroll natively; a mouse wheel scrolls sideways; a
+   mouse drag tracks 1:1 from where it grabbed, then coasts on the release velocity with
+   UIScrollView's deceleration (0.998/ms). Any new touch or wheel stops the coast. */
+function makeRail(rail) {
+  const box = $(".presets", rail);
+  const nudge = (dir) => h("button", { class: "nudge " + (dir < 0 ? "l" : "r"), tabindex: "-1", "aria-hidden": "true",
+    onclick: () => { stop(); box.scrollBy({ left: dir * box.clientWidth * 0.8, behavior: "smooth" }); } },
+    dir < 0 ? "‹" : "›");
+  rail.append(nudge(-1), nudge(1));
+  let coast = 0;
+  const stop = () => { cancelAnimationFrame(coast); coast = 0; };
+  rail.update = () => {
+    const max = box.scrollWidth - box.clientWidth;
+    rail.classList.toggle("more-l", box.scrollLeft > 1);
+    rail.classList.toggle("more-r", box.scrollLeft < max - 1);
+  };
+  box.addEventListener("scroll", rail.update, { passive: true });
+  new ResizeObserver(rail.update).observe(box);
+  box.addEventListener("wheel", (e) => {
+    if (box.scrollWidth <= box.clientWidth || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+    const max = box.scrollWidth - box.clientWidth;
+    // let the page scroll once the rail has nowhere left to go
+    if ((e.deltaY < 0 && box.scrollLeft <= 0) || (e.deltaY > 0 && box.scrollLeft >= max)) return;
+    e.preventDefault(); stop();
+    box.scrollLeft += e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY;
+  }, { passive: false });
+  box.addEventListener("pointerdown", (e) => {
+    stop();
+    if (e.pointerType !== "mouse" || e.button !== 0) return;
+    const x0 = e.clientX, s0 = box.scrollLeft, hist = [[e.timeStamp, x0]];
+    let dragging = false;
+    const move = (ev) => {
+      if (!dragging && Math.abs(ev.clientX - x0) < 6) return;   // a small wobble is still a click
+      if (!dragging) { dragging = true; rail.classList.add("dragging"); box.setPointerCapture(e.pointerId); }
+      box.scrollLeft = s0 - (ev.clientX - x0);
+      hist.push([ev.timeStamp, ev.clientX]); if (hist.length > 5) hist.shift();
+    };
+    const up = (ev) => {
+      box.removeEventListener("pointermove", move); box.removeEventListener("pointerup", up); box.removeEventListener("pointercancel", up);
+      if (!dragging) return;
+      rail.classList.remove("dragging");
+      // the drag was a scroll, not a press: swallow the click it would otherwise end in
+      box.addEventListener("click", (c) => { c.stopPropagation(); c.preventDefault(); }, { capture: true, once: true });
+      setTimeout(() => box.dispatchEvent(new Event("click")), 0);   // clears the swallow if no click came
+      const [t0, xa] = hist[0], [t1, xb] = hist[hist.length - 1];
+      let v = t1 - t0 > 0 && ev.timeStamp - t1 < 80 ? -(xb - xa) / (t1 - t0) : 0;   // px/ms, scroll direction
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) v = 0;
+      let last = performance.now();
+      const step = (now) => {
+        const dt = Math.min(32, now - last); last = now;
+        box.scrollLeft += v * dt;
+        v *= Math.pow(0.998, dt);
+        const max = box.scrollWidth - box.clientWidth;
+        coast = Math.abs(v) > 0.02 && box.scrollLeft > 0 && box.scrollLeft < max ? requestAnimationFrame(step) : 0;
+      };
+      if (Math.abs(v) > 0.05) coast = requestAnimationFrame(step);
+    };
+    box.addEventListener("pointermove", move); box.addEventListener("pointerup", up); box.addEventListener("pointercancel", up);
+  });
 }
 async function loadPreset(name) {
   try {
@@ -936,6 +1036,7 @@ function renderAll() { renderLayers(); renderMaster(); }
   buildStage();
   wireStrobe();
   renderAll();
+  makeRail($("#railBuiltin")); makeRail($("#railUser"));
   renderPresets(CAT.presets);
   connectLive();
 })().catch((e) => toast("Studio failed to start: " + e.message));
