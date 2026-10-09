@@ -94,14 +94,16 @@ It is a control panel in your browser with a live preview of the strip. A look i
 **layers**; each layer runs one effect on a range of segments and blends onto the layers below.
 
 - **Effects**: solid, paint (set every segment by hand), gradient scroll, rainbow, spectrum bars,
-  level meter, beat pulse, comets, sparkle, fire, sine wave, ripples, strobe, breathe, plasma.
+  level meter, beat pulse, bass pulse, comets, sparkle, fire, sine wave, ripples, strobe, breathe,
+  plasma, chill flow (a slow drift that breathes softly with the beat, for working).
 - **Per segment**: each layer has a segment range (click the mini strip), reverse, and mirror
   from center, so the halves or thirds of the strip can do different things.
 - **Music sync on any knob**: press ♪ next to any slider (including a layer's opacity and the
   master brightness) and pick what it follows: bass, mid, high, energy, beat, or an LFO.
   Example: comet speed follows energy, sparkle opacity follows high, master follows beat.
 - **Blend modes**: normal, add, screen, max, multiply.
-- **Presets**: 14 built-ins to start from (Bass Pulse, Rolling Neon, Spectrum, ...); save your own (stored in `~/.govee-rt/presets/`).
+- **Presets**: 16 built-ins to start from (Bass Pulse, Rolling Neon, Rolling Rio, Chill Flow, Spectrum,
+  ...); save your own (stored in `~/.govee-rt/presets/`).
 
 With no loopback input found (or with `--demo`) it runs a synthetic 124 BPM beat so you can
 design without music playing. The look on screen when you quit comes back next time.

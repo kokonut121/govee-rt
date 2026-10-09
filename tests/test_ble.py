@@ -423,3 +423,52 @@ def test_engine_feeds_the_scene_palette_to_roll_flash():
         assert [fake.sketch[b] for b in bars] == [(255, 0, 0), (255, 0, 0), (0, 255, 0), (0, 255, 0)]
     finally:
         eng.stop()
+
+
+def test_flow_uploads_the_palette_gradient_once_and_glides_brightness():
+    ble = govee_rt.ble
+    fake = FakeBleClient(segments=20)
+    g = govee_rt.GoveeBle(segments=20, mode="flow", cells=60, client_factory=lambda: fake)
+    rio = [(0, 192, 64), (255, 208, 0), (0, 224, 176), (0, 64, 255)]    # on the sketch's 8-step grid
+    try:
+        g.set_roll_colors(rio)
+        levels = []
+        for pct in (30, 70, 62, 55, 50, 31, 30):              # rest, a beat's swell and fall
+            g.rt_frame([(round(pct * 2.55), 0, 0)] * 20)
+            g.flush(timeout=2)
+            levels.append(fake.brightness)
+        assert levels == [30, 70, 62, 55, 50, 31, 31]         # 2 % steps; a 1 % wobble costs no write
+        assert fake.stats["sketch_upload"] == 1               # the strip animates, the Mac only dims
+        assert fake.sketch_effect == ble.FLOW_EFFECT and fake.sketch_speed == ble.FLOW_SPEED
+        pic = fake.sketch
+        assert [pic[i] for i in (0, 15, 30, 45)] == rio       # one cycle through the palette
+        assert max(max(abs(a - b) for a, b in zip(c, d)) for c, d in zip(pic, pic[1:] + pic[:1])) <= 32
+        g.set_roll_colors(rio[::-1])                          # palette changed in the studio
+        g.rt_frame([(255, 0, 0)] * 20)
+        g.flush(timeout=2)
+        assert fake.stats["sketch_upload"] == 2 and fake.sketch[0] == rio[-1]
+        g.rt_disable()
+        assert fake.brightness == 100 and fake.bad == 0
+    finally:
+        g.close()
+
+
+def test_leaving_a_dimming_scene_restores_full_brightness():
+    from govee_rt.engine import Engine
+    import govee_rt.effects as fx
+    fake = FakeBleClient(segments=20)
+    eng = Engine(20, lambda: govee_rt.GoveeBle(segments=20, mode="stream", cells=60, client_factory=lambda: fake),
+                 fps=30, scene={"ble_mode": "flow", "layers": [fx.new_layer("chill")], "master": {"gamma": 1.0}})
+    eng.connect()
+    try:
+        eng._send(eng.step(0.0, 1 / 30))
+        eng.light.flush()
+        assert eng.light.mode == "flow" and fake.sketch_effect == govee_rt.ble.FLOW_EFFECT
+        assert fake.brightness == 30                          # Chill flow resting in silence
+        eng.set_scene({"layers": [fx.new_layer("bass_pulse")]})   # back to a party scene (stream)
+        eng._send(eng.step(0.1, 1 / 30))
+        eng.light.flush()
+        assert eng.light.mode == "stream" and fake.brightness == 100 and fake.streamed
+        assert fake.bad == 0
+    finally:
+        eng.stop()

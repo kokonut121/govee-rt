@@ -17,7 +17,7 @@ Verified (in CI, against `tests/fake_govee.py`, not the real strip):
   128 BPM track; all four modes hold 40 fps from a WAV source.
 - BLE transport (`GoveeBle`) against `tests/fake_govee_ble.py`: H617A segment packet layout,
   segment planning, latest-frame-wins pacing on a slow link, encrypted-device refusal.
-- Effects engine (15 effects, layers, blend modes, per-param audio modulation), 10 built-in
+- Effects engine (17 effects, layers, blend modes, per-param audio modulation), 16 built-in
   presets, render loop and studio HTTP API (`tests/test_effects.py`). Studio UI checked in a
   browser in preview-only mode (`studio --no-send`), desktop and phone widths.
 
@@ -281,6 +281,31 @@ Bass sync session (2026-10-07, brief in `docs/BASS_SYNC_PROMPT.md`):
 - Still open from the baseline: some kicks missed (knob: `threshold` toward 0.6) and flashes "a
   little late" (try `--block 512`). Stage 2 not started: owner has not yet confirmed hits on the
   beat and the drop out of black at full.
+
+Chill mode and Rio colors (2026-10-09, owner: "a mode that still syncs to music like the party
+mode but is less energetic for a more chill vibe where ppl could also get some work done", and
+"a rio color theme of like green and yellow"):
+
+- Palette `rio`: Brazil green `#00c040`, gold `#ffd200`, turquoise `#00e0b0`, blue `#0040ff`
+  (the flag's navy reads near black on LEDs). Ordered so no blend goes gray (gold next to blue
+  would); the weakest blend is a soft mint between gold and turquoise.
+- Effect `chill` ("Chill flow"): palette drifts slowly (0.02 cycles/s); each beat lifts the level
+  by `swell` 0.4 with a 0.04 s rise and 0.5 s fall over `floor` 0.3, plus `body` 0.15 from
+  `bass_slow` smoothed over 1 s up / 3 s down. Synthetic 128 BPM track: 0.56..0.76 while the
+  kick runs (vs Bass Pulse off/full), crest ~70 ms after the kick, breakdown ~0.5, silence 0.3.
+  Never dark, no color steps, no strobe; not `reactive`, so no idle rainbow while people work.
+- BLE mode `flow`: the palette as one smooth 60-cell cycle, uploaded once with the strip's own
+  gradient effect `0x13` at speed 50 (the idle look the owner liked), the scene's level on
+  brightness `33 04` in 2 % steps (ACK-paced, latest wins). Same mechanism as `roll_flash`.
+- Presets: `Chill Flow` (chill, rio, `ble_mode: flow`, gamma 1.0 so level = brightness %) and
+  `Rolling Rio` (Rolling Neon with the rio palette).
+- Fix: switching from a scene that dims the strip (`roll_flash`, `flow`, `hybrid`) to one that
+  doesn't left the brightness where it was (Rolling Neon at 30 % then Neon Bass ran at 30 %).
+  `rt_enable()` keeps `_bright_sent` and the sender restores 100 before the first frame of a
+  non-dimming mode.
+- Not yet seen on the strip. Ask: is speed 50 calm enough for work (or slower), is the beat
+  swell visible but not distracting, is 30 % rest bright enough, do the flow stats show
+  timeouts with the Marshall playing (`flow_levels` vs link `timeouts`).
 
 Full-fidelity per-segment animation at 40 fps needs the Wi-Fi razer path; test it with the
 strip and Mac on an iPhone hotspot (Maximize Compatibility) before buying anything.

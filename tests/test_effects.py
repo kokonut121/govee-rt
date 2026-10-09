@@ -676,3 +676,47 @@ def test_run_gap_shows_every_kick_of_a_fast_run():
     assert all(a != b for a, b in zip(run, run[1:]))
     spaced = _lit_runs(_bass_pulse_run(x, sr, hit_min=0.5, sustain=0.75, run_gap=0.3))
     assert sum(1 for s, e in spaced if 2.0 < s < 3.9) >= 3  # beats with space still go off between
+
+
+# ----------------------------------------------------------------------------- Chill flow, Rio
+
+def test_rio_palette_blends_stay_saturated():
+    rgb = fx.sample("rio", np.linspace(0, 1, 240, endpoint=False))
+    assert (1 - rgb.min(axis=1) / rgb.max(axis=1)).min() >= 0.45   # no blend goes gray
+
+
+def _chill_run(x, sr, **params):
+    from govee_rt.audio import Analyzer
+    block = 1024
+    an = Analyzer(sr, 15, block)
+    r = fx.Renderer(1, {"layers": [fx.new_layer("chill", params=dict({"palette": "white"}, **params))],
+                        "master": {"gamma": 1.0}})
+    frames = []
+    for i in range(0, len(x) - block, block):
+        f = an.process(x[i:i + block])
+        frames.append((an.t, max(r.render(f, an.t, block / sr, f["beat"])[0]) / 255))
+    return frames
+
+
+def test_chill_breathes_on_the_beat_without_flashing():
+    from make_test_wav import synth
+    sr, x, kicks = synth(bpm=128, seconds=16, kick_gap=(8, 12))
+    frames = _chill_run(np.concatenate([x, np.zeros(6 * sr, dtype=x.dtype)]), sr)   # then the music stops
+    grooving = [v for t, v in frames if 2 <= t < 8]
+    assert 0.12 <= max(grooving) - min(grooving) <= 0.3     # a soft swell, not Bass Pulse's off -> full
+    assert min(grooving) >= 0.45                            # never sinks toward dark while the beat runs
+    assert max(abs(b - a) for (_, a), (_, b) in zip(frames, frames[1:])) <= 0.2   # glides, no hard flash
+    for k in kicks:
+        if 2 <= k < 8:
+            crest = max(((t, v) for t, v in frames if k <= t < k + 0.3), key=lambda tv: tv[1])[0]
+            assert crest - k <= 0.12                        # crests on the kick, not after it
+    breakdown = [v for t, v in frames if 10 <= t < 12]
+    assert np.mean(breakdown) < np.mean(grooving) - 0.08    # the breakdown sits dimmer
+    silent = [v for t, v in frames if t >= 20]
+    assert silent and all(0.3 <= v <= 0.36 for v in silent)   # rests near floor, never black
+
+
+def test_chill_flow_preset_keeps_showing_in_silence(tmp_path):
+    scene = fx.normalize_scene(Presets(user_dir=str(tmp_path)).load("Chill Flow"))
+    assert scene["ble_mode"] == "flow" and not fx.scene_idles(scene)   # no idle rainbow while working
+    assert scene["layers"][0]["params"]["palette"] == "rio"
