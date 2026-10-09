@@ -286,9 +286,12 @@ Chill mode and Rio colors (2026-10-09, owner: "a mode that still syncs to music 
 mode but is less energetic for a more chill vibe where ppl could also get some work done", and
 "a rio color theme of like green and yellow"):
 
-- Palette `rio`: Brazil green `#00c040`, gold `#ffd200`, turquoise `#00e0b0`, blue `#0040ff`
-  (the flag's navy reads near black on LEDs). Ordered so no blend goes gray (gold next to blue
-  would); the weakest blend is a soft mint between gold and turquoise.
+- Palette `rio`: pure green `#00ff00` and gold `#ffd200` only (owner 2026-10-08: "just be a
+  green and yellow gradient flow"; it first also had turquoise `#00e0b0` and blue `#0040ff`).
+  The blend passes lime, never gray. In `Rolling Rio` the 4 bars alternate green / gold.
+  Side-by-side test on the strip (still sketch, 5 sections): `#00c040`, `#00e0b0` and `#0000ff`
+  all read blue to the owner; only `#00ff00` and `#ffd200` looked right. A green needs zero
+  blue on this strip.
 - Effect `chill` ("Chill flow"): palette drifts slowly (0.02 cycles/s); each beat lifts the level
   by `swell` 0.4 with a 0.04 s rise and 0.5 s fall over `floor` 0.3, plus `body` 0.15 from
   `bass_slow` smoothed over 1 s up / 3 s down. Synthetic 128 BPM track: 0.56..0.76 while the
@@ -330,6 +333,8 @@ strip and Mac on an iPhone hotspot (Maximize Compatibility) before buying anythi
 - Finger Sketch over BLE: 60 cells (owner screenshot: 2 rows of 30), upload `A3` type 0x03 then
   select `33 05 0a 20 03`; owner saw the 60-cell pattern; ~3 updates/s. Effect `0x09` speed 0
   holds still. Cell 1 is at the owner's right, so the profile sets `reverse`.
+- Color: any blue in a green takes over. `#00c040` (green with 25 % blue) and turquoise
+  `#00e0b0` read blue to the owner next to pure `#0000ff`; pure `#00ff00` reads green.
 - Sketch effects animated by the strip itself: `0x09` clockwise moves one cell at a time (owner:
   jerky); `0x13` gradient fades smoothly (owner's pick for idle, speed 50); `0x02` cycle less smooth.
 - Idle: after 3 s of silence on BlackHole (RMS < 1e-3) the engine shows a 60-cell rainbow with

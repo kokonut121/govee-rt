@@ -429,9 +429,9 @@ def test_flow_uploads_the_palette_gradient_once_and_glides_brightness():
     ble = govee_rt.ble
     fake = FakeBleClient(segments=20)
     g = govee_rt.GoveeBle(segments=20, mode="flow", cells=60, client_factory=lambda: fake)
-    rio = [(0, 192, 64), (255, 208, 0), (0, 224, 176), (0, 64, 255)]    # on the sketch's 8-step grid
+    pal = [(0, 192, 64), (255, 208, 0), (0, 224, 176), (0, 64, 255)]    # on the sketch's 8-step grid
     try:
-        g.set_roll_colors(rio)
+        g.set_roll_colors(pal)
         levels = []
         for pct in (30, 70, 62, 55, 50, 31, 30):              # rest, a beat's swell and fall
             g.rt_frame([(round(pct * 2.55), 0, 0)] * 20)
@@ -441,12 +441,12 @@ def test_flow_uploads_the_palette_gradient_once_and_glides_brightness():
         assert fake.stats["sketch_upload"] == 1               # the strip animates, the Mac only dims
         assert fake.sketch_effect == ble.FLOW_EFFECT and fake.sketch_speed == ble.FLOW_SPEED
         pic = fake.sketch
-        assert [pic[i] for i in (0, 15, 30, 45)] == rio       # one cycle through the palette
+        assert [pic[i] for i in (0, 15, 30, 45)] == pal       # one cycle through the palette
         assert max(max(abs(a - b) for a, b in zip(c, d)) for c, d in zip(pic, pic[1:] + pic[:1])) <= 32
-        g.set_roll_colors(rio[::-1])                          # palette changed in the studio
+        g.set_roll_colors(pal[::-1])                          # palette changed in the studio
         g.rt_frame([(255, 0, 0)] * 20)
         g.flush(timeout=2)
-        assert fake.stats["sketch_upload"] == 2 and fake.sketch[0] == rio[-1]
+        assert fake.stats["sketch_upload"] == 2 and fake.sketch[0] == pal[-1]
         g.rt_disable()
         assert fake.brightness == 100 and fake.bad == 0
     finally:

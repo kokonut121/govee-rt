@@ -41,11 +41,9 @@ PALETTES = {
     "fire": ["#000000", "#ff2000", "#ff8000", "#ffd060"],
     "meter": ["#00ff40", "#ffee00", "#ff0000"],
     "pastel": ["#ffb3ba", "#ffdfba", "#baffc9", "#bae1ff"],
-    # Rio: Brazil green and gold, Copacabana turquoise, flag blue (brighter than the flag's navy,
-    # which reads as near black on an LED). Ordered so no blend goes gray: green-gold passes lime,
-    # gold-turquoise a soft mint, turquoise-blue azure, blue-green teal (gold next to blue would
-    # pass through gray).
-    "rio": ["#00c040", "#ffd200", "#00e0b0", "#0040ff"],
+    # Rio: green and gold only, a two-color gradient (the blend passes lime, never gray). Pure
+    # green: on the H612D any blue in a green takes over (#00c040 read blue to the owner)
+    "rio": ["#00ff00", "#ffd200"],
     "white": ["#ffffff"],
 }
 
