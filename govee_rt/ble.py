@@ -173,6 +173,15 @@ ROLL_DELAY0 = 0.2              # first guess of upload start -> strip rolling, t
 ROLL_FLASH_BARS = 4            # "roll_flash": evenly spaced bars, one palette color each
 ROLL_FLASH_STEP = 4            # brightness % change worth an ACKed write
 
+# ---- "flow" (chill): the palette as one smooth cycle around the strip, animated by the strip's
+# own Finger Sketch gradient (the owner's smooth idle look), uploaded once; the scene's level
+# (Chill flow: a soft swell per beat) rides on brightness, like roll_flash.
+FLOW_EFFECT = 0x13
+FLOW_SPEED = 50                # the owner's pick for the idle rainbow (2026-10-06)
+FLOW_STEP = 2                  # smaller than roll_flash: the level glides instead of jumping
+
+DIMMING_MODES = ("hybrid", "roll_flash", "flow")   # modes that carry the level on brightness
+
 
 def roll_picture(cells, positions=(0,), bar=ROLL_BAR, color=ROLL_COLOR, colors=None):
     """60-cell picture with a bar starting at each position (cell 0 = the right end).
@@ -190,6 +199,18 @@ def roll_flash_picture(cells, colors, bars=ROLL_FLASH_BARS, bar=ROLL_BAR):
     colors = list(colors) or [ROLL_COLOR]
     picks = [colors[(k * len(colors)) // bars] for k in range(bars)]
     return roll_picture(cells, [round(k * cells / bars) for k in range(bars)], bar=bar, colors=picks)
+
+
+def flow_picture(cells, colors):
+    """One smooth cycle through the palette around the strip, blending back into the first color."""
+    colors = list(colors) or [ROLL_COLOR]
+    k = len(colors)
+    pic = []
+    for i in range(cells):
+        x = i * k / cells
+        a, b, f = colors[int(x) % k], colors[(int(x) + 1) % k], x - int(x)
+        pic.append(tuple(int(round(a[j] + (b[j] - a[j]) * f)) for j in range(3)))
+    return pic
 
 
 def stream_frame(r, g, b):
@@ -462,10 +483,15 @@ class GoveeBle:
                         await self._write(ble_keepalive())
                         last_tx = time.monotonic()
                     continue
+                if self._bright_sent not in (None, 100) and self.mode not in DIMMING_MODES:
+                    await self._write_acked(ble_brightness(100), 0.4)   # the last scene left it dimmed
+                    self._bright_sent = 100
                 if self.mode == "stream":
                     await self._send_stream(colors)
                 elif self.mode in ("roll", "roll_hits", "roll_flash"):
                     await self._send_roll(colors)
+                elif self.mode == "flow":
+                    await self._send_flow(colors)
                 elif self.mode == "hybrid":
                     await self._send_hybrid(colors)
                 else:
@@ -534,32 +560,51 @@ class GoveeBle:
             await self._roll_upload(self._roll_bars + hits)
 
     def set_roll_colors(self, colors):
-        """Palette for the "roll_flash" bars (0..255 RGB tuples); a change re-uploads them."""
+        """Palette for the "roll_flash" bars and the "flow" gradient (0..255 RGB tuples); a
+        change re-uploads the picture."""
         colors = [tuple(int(v) for v in c) for c in colors][:8] or [ROLL_COLOR]
         if colors != self._roll_colors:
             self._roll_colors = colors
             self._roll_ready = False
 
-    async def _send_roll_flash(self, colors):
-        """Bars + flash: the colored bars roll on the strip untouched; the scene's brightness
-        (Bass Pulse: full on a kick, rest between, ~off when dark) rides on the brightness
-        command, ACK-paced, latest wins. Brightness changes don't interrupt the roll."""
-        if not self._roll_ready:
-            pic = roll_flash_picture(self.cells, self._roll_colors)
-            frames, _ = sketch_plan(pic, self.cells, effect=ROLL_EFFECT, speed=ROLL_SPEED)
-            for f in frames:
-                await self._write(f)
-            await self._write_acked(sketch_select(self.sketch_code))
-            self._roll_ready = True
-            self._sketch_pic = self._stream_sent = None
-            self.stats["roll_uploads"] += 1
+    async def _upload_picture(self, pic, effect, speed):
+        """Put a picture on the strip for it to animate by itself (effect/speed) and select it."""
+        frames, _ = sketch_plan(pic, self.cells, effect=effect, speed=speed)
+        for f in frames:
+            await self._write(f)
+        await self._write_acked(sketch_select(self.sketch_code))
+        self._roll_ready = True
+        self._sketch_pic = self._stream_sent = None
+
+    async def _ride_brightness(self, colors, step):
+        """The frame's peak as the strip's brightness, ACK-paced, latest wins. Brightness changes
+        don't interrupt the strip's own animation. True if a write went out."""
         peak = max((max(c) for c in colors), default=0)
         pct = max(1, round(peak / 255 * 100))
         sent = self._bright_sent
-        if sent is None or abs(pct - sent) >= ROLL_FLASH_STEP or (pct == 1) != (sent == 1) or (pct == 100) != (sent == 100):
+        if sent is None or abs(pct - sent) >= step or (pct == 1) != (sent == 1) or (pct == 100) != (sent == 100):
             await self._write_acked(ble_brightness(pct), 0.4)
             self._bright_sent = pct
+            return True
+        return False
+
+    async def _send_roll_flash(self, colors):
+        """Bars + flash: the colored bars roll on the strip untouched; the scene's brightness
+        (Bass Pulse: full on a kick, rest between, ~off when dark) rides on brightness."""
+        if not self._roll_ready:
+            await self._upload_picture(roll_flash_picture(self.cells, self._roll_colors), ROLL_EFFECT, ROLL_SPEED)
+            self.stats["roll_uploads"] += 1
+        if await self._ride_brightness(colors, ROLL_FLASH_STEP):
             self.stats["roll_flashes"] += 1
+
+    async def _send_flow(self, colors):
+        """Chill: the palette gradient flows on the strip untouched; the scene's level (a soft
+        swell per beat over a resting level) rides on brightness in small steps."""
+        if not self._roll_ready:
+            await self._upload_picture(flow_picture(self.cells, self._roll_colors), FLOW_EFFECT, FLOW_SPEED)
+            self.stats["flow_uploads"] += 1
+        if await self._ride_brightness(colors, FLOW_STEP):
+            self.stats["flow_levels"] += 1
 
     async def _roll_upload(self, bars, positions=None):
         t0 = time.monotonic()
@@ -639,7 +684,9 @@ class GoveeBle:
         self._run(go(), 10)
 
     def rt_enable(self):
-        self._state = self._sketch_pic = self._stream_sent = self._bright_sent = None
+        # _bright_sent survives: the strip keeps its brightness, and a mode that doesn't dim
+        # restores 100 from it (switching from Chill flow to a party scene)
+        self._state = self._sketch_pic = self._stream_sent = None
         self._roll_reset()          # the strip may show something else now: re-upload the bar
         if self.mode == "razer":
             self._run(self._write(razer_frame(0xB1, b"\x01")))
@@ -651,7 +698,7 @@ class GoveeBle:
         try:
             if self.mode == "razer":
                 self._run(self._write(razer_frame(0xB1, b"\x00")))
-            elif self.mode in ("hybrid", "roll_flash") and self._bright_sent not in (None, 100):
+            elif self._bright_sent not in (None, 100):
                 self._run(self._write_acked(ble_brightness(100)))   # don't leave the strip dimmed
                 self._bright_sent = 100
         except Exception:

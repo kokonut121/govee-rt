@@ -41,6 +41,11 @@ PALETTES = {
     "fire": ["#000000", "#ff2000", "#ff8000", "#ffd060"],
     "meter": ["#00ff40", "#ffee00", "#ff0000"],
     "pastel": ["#ffb3ba", "#ffdfba", "#baffc9", "#bae1ff"],
+    # Rio: Brazil green and gold, Copacabana turquoise, flag blue (brighter than the flag's navy,
+    # which reads as near black on an LED). Ordered so no blend goes gray: green-gold passes lime,
+    # gold-turquoise a soft mint, turquoise-blue azure, blue-green teal (gold next to blue would
+    # pass through gray).
+    "rio": ["#00c040", "#ffd200", "#00e0b0", "#0040ff"],
     "white": ["#ffffff"],
 }
 
@@ -296,6 +301,42 @@ class Pulse(Effect):
         self.pos = follow(self.pos, self.target, c.dt, p["glide"], p["glide"])
         v = p["floor"] + (1 - p["floor"]) * self.env
         return np.tile(sample(p["palette"], np.array([self.pos]))[0] * v, (self.n, 1))
+
+
+@register
+class Chill(Effect):
+    """Calm music sync for working (owner, 2026-10-09: "less energetic ... where ppl could also
+    get some work done"). The palette drifts slowly along the strip and the light breathes with
+    the song instead of flashing: each beat lifts it by `swell` with a soft rise and a long
+    fall, so a steady beat reads as a gentle pulse, and the bass under the song (`bass_slow`
+    smoothed over seconds) lifts the resting level by `body`, so a drop sits a little brighter
+    than a breakdown. Never dark, no color steps, no strobe. Not `reactive`: in silence it rests
+    at `floor` and keeps drifting instead of handing over to the idle rainbow."""
+    name, label = "chill", "Chill flow"
+    params = [PAL(default="rio"), F("speed", 0.02, -0.5, 0.5, label="drift (cycles/s)"),
+              F("spread", 1.0, 0.1, 4.0, label="cycles across strip"),
+              F("floor", 0.3, 0.0, 1.0, label="resting brightness"),
+              F("swell", 0.4, 0.0, 1.0, label="lift on each beat"),
+              F("body", 0.15, 0.0, 0.5, label="lift while the bass plays"),
+              F("rise", 0.04, 0.0, 0.5, label="swell rise (s)"),
+              F("fall", 0.5, 0.1, 3.0, label="swell fall (s)")]
+
+    BODY_RISE, BODY_FALL = 1.0, 3.0    # s: the resting level follows the song's sections, not its notes
+
+    def reset(self):
+        self.phase = self.kick = self.env = self.body = 0.0
+
+    def render(self, c, p):
+        if c.beat:
+            self.kick = 1.0
+        else:
+            self.kick *= math.exp(-c.dt / p["fall"])
+        self.env = follow(self.env, self.kick, c.dt, p["rise"], 0.0)
+        bass = c.f.get("bass_slow", c.f.get("bass", 0.0))
+        self.body = follow(self.body, bass, c.dt, self.BODY_RISE, self.BODY_FALL)
+        v = min(1.0, p["floor"] + p["swell"] * self.env + p["body"] * self.body)
+        self.phase += p["speed"] * c.dt
+        return sample(p["palette"], self.i / max(1, self.n) * p["spread"] + self.phase) * v
 
 
 @register
@@ -730,7 +771,7 @@ def _clean_value(spec, v):
     raise ValueError(kind)
 
 
-SCENE_BLE_MODES = ("roll", "roll_hits", "roll_flash")
+SCENE_BLE_MODES = ("roll", "roll_hits", "roll_flash", "flow")
 
 
 def scene_idles(scene):

@@ -108,7 +108,7 @@ class Engine:
         return s
 
     def _scene_palette(self):
-        """The first enabled layer's palette as 0..255 RGB (bar colors for "roll_flash")."""
+        """The first enabled layer's palette as 0..255 RGB (the picture for "roll_flash" / "flow")."""
         scene = self.renderer.scene
         if getattr(self, "_pal_scene", None) is not scene:
             pal = next((l["params"]["palette"] for l in scene.get("layers", [])
@@ -227,7 +227,7 @@ class Engine:
                     want = self.renderer.scene.get("ble_mode") or want
                 if want and want != light.mode:
                     light.set_mode(want)
-                if light.mode == "roll_flash" and hasattr(light, "set_roll_colors"):
+                if light.mode in ("roll_flash", "flow") and hasattr(light, "set_roll_colors"):
                     light.set_roll_colors(self._scene_palette())
             light.rt_frame(colors)
             self.stats["sent"] += 1

@@ -47,6 +47,7 @@ class FakeBleClient:
         self.sketch = None                 # last uploaded picture: list of cell colors
         self.shown = None                  # what the strip displays in sketch mode
         self.sketch_effect = None
+        self.sketch_speed = None
         self._a3 = []
         self.streamed = []                 # colors received on the a5 02 83 stream
         self.razer_frames = []
@@ -161,7 +162,7 @@ class FakeBleClient:
                     return
                 pic[c] = fill
             pos += 4 + n
-        self.sketch, self.sketch_effect = pic, effect
+        self.sketch, self.sketch_effect, self.sketch_speed = pic, effect, body[2]
         self.stats["sketch_upload"] += 1
         if self._notify:
             reply = bytes([0xA3, 0x03, 0x00]) + bytes(16)
